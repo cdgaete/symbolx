@@ -1,13 +1,13 @@
 import glob
 import os
 import re
-import copy
+import uuid
+import pyarrow.feather as ft
 from typing import Callable
-
 from .parser import load_scenario_info
 
 
-class SymbolHandler:
+class DataCollection:
     def __init__(self):
         '''
         Collect scenarios per symbol
@@ -16,6 +16,12 @@ class SymbolHandler:
         self.config_files = None
         self.config = None
         self.data = None
+        self.symbol_name_list = None
+        self.symbol_valuetype_dict = None
+        self.short_names = None
+        self.metadata_template = None
+        self.scenarios_metadata = None
+        self.symbols_book = None
 
     def add_collector(self, colector_name:str, parser:Callable, loader:Callable):
         self.collector[colector_name] = {}
@@ -49,22 +55,27 @@ class SymbolHandler:
         for config_file in self.config_files:
             config = load_scenario_info(config_file)
             self.config[config['id']] = config
+        self.config = dict(sorted(self.config.items()))
         assert len(self.config) == len(self.config_files), "Config files with same id found"
 
-
-    def collectinfo(self):
-
-        self.symbols = self._list_all_symbols()
-        self.shortscennames = self._scenario_name_shortener(self.data)
-        self.loopitems = self.get_loopitems(self.data)
-        self.pathsbook = dict()
+        self._get_symbol_lists()
+        self._scenario_name_shortener()
+        self._get_metadata_template()
+        self._get_all_scenario_metadata()
+        self._join_all_symbols()
 
 
-    def _list_all_symbols(self):
-        list_with_symbols_and_value_type = []
+    def _get_symbol_lists(self):
+        list_of_symbols = []
+        symbols_and_value_type = {}
         for symb_info in self.data:
-            list_with_symbols_and_value_type.append('.'.join([symb_info['symbol_name'], symb_info['value_type']]))
-        return sorted(list(set(list_with_symbols_and_value_type)))
+            list_of_symbols.append(symb_info['symbol_name'])
+            symbols_and_value_type[(symb_info['symbol_name'], symb_info['value_type'])] = None
+
+        self.symbol_name_list = sorted(list(set(list_of_symbols)))
+        self.symbol_valuetype_dict = dict(sorted(symbols_and_value_type.items()))
+
+        return None
     
     def _scenario_name_shortener(self):
         flag = False
@@ -109,93 +120,121 @@ class SymbolHandler:
             for n, name in enumerate(names):
                 shortname = "S" + str(n).zfill(digit)
                 shortnames[name] = shortname
-        return shortnames
+        self.short_names = shortnames
+        return None
 
-    def get_loopitems(self):
-        loopkeys = []
+    def _get_metadata_template(self):
+        items_collector = []
         for scen in self.config:
-            loopkeys += list(self.config[scen]["config"].keys())
-        loopset = list(set(loopkeys))
-        loopitems = {}
-        for loop in loopset:
-            loopitems[loop] = None
-        return loopitems
+            items_collector += list(self.config[scen]["config"])
+        items = list(set(items_collector))
+        self.metadata_template = {item:None for item in items}
+        return None
 
-    def get_modifiers(self, scen, loopitems):
-        loops = {}
-        for key in loopitems:
-            if key in scen["loop"].keys():
-                loops[key] = scen["loop"][key]
-        return loops
+    def _get_scenario_metadata(self, scen:str):
+        scenario_metadata = {}
+        for key in self.metadata_template:
+            if key in self.config[scen]["config"]:
+                scenario_metadata[key] = self.config[scen]["config"][key]
+            else:
+                scenario_metadata[key] = None
+        return scenario_metadata
 
-    def join_scens_by_symbol(self, symbol):
+    def _get_all_scenario_metadata(self):
+        all_scenario_metadata = {}
+        for scen in self.config:
+            all_scenario_metadata[scen] = self._get_scenario_metadata(scen)
+        self.scenarios_metadata = all_scenario_metadata
+        return None
+
+    def _get_symbol_metadata(self, symbol_name:str, value_type:str):
+        symbol_metadata = {}
+        for scen in self.config:
+            if (symbol_name,value_type) in self.symbol_valuetype_dict:
+                symbol_metadata[scen] = self.scenarios_metadata[scen]
+            else:
+                print(f"{symbol_name} not found in {scen}")
+                symbol_metadata[scen] = self.metadata_template
+        return symbol_metadata
+
+    def _join_scenarios_by_symbol(self, symbol_name:str, value_type:str='v'):
         """
         symbol
         """
-        sceninfo_dict = dict()
-        for indx, scen in enumerate(self.data):
-            if symbol in scen.keys():
-                sceninfo_dict[indx] = scen
-        outputdict = {}
-        for idx, scenario in sceninfo_dict.items():
-            symb_seudo_df = {}
-            symb_seudo_df['symbol'] = symbol
-            symb_seudo_df['scenario_id'] = scenario['scenario']
-            symb_seudo_df['short_id'] = self.shortscennames[scenario['scenario']]
-            symb_seudo_df['dims'] = scenario[symbol]['dims']
-            symb_seudo_df['nrdims'] = scenario[symbol]['nrdims']
-            symb_seudo_df['nrrecs'] = scenario[symbol]['nrrecs']
-            symb_seudo_df['uelmap'] = scenario[symbol]['uelmap']
-            symb_seudo_df['gdx_path'] = scenario[symbol]['gdx_path']
-            symb_seudo_df['dim_coords'] = scenario[symbol]['dim_coords']
-            outputdict[idx] = symb_seudo_df
+        for data in self.data:
+            if data['symbol_name'] == symbol_name and data['value_type'] == value_type:
+                if self.symbols_book is None:
+                    self.symbols_book = {}
+                if (symbol_name, value_type) not in self.symbols_book:
+                    self.symbols_book[(symbol_name, value_type)] = {}
+                if 'short_names' not in self.symbols_book[(symbol_name, value_type)]:
+                    self.symbols_book[(symbol_name, value_type)]['short_names'] = self.short_names
+                if 'metadata' not in self.symbols_book[(symbol_name, value_type)]:
+                    self.symbols_book[(symbol_name, value_type)]['metadata'] = self._get_symbol_metadata(symbol_name, value_type)
+                if 'scenario_data' not in self.symbols_book[(symbol_name, value_type)]:
+                    self.symbols_book[(symbol_name, value_type)]['scenario_data'] = {}
+                self.symbols_book[(symbol_name, value_type)]['scenario_data'][data['scenario_id']] = data
+        self.symbols_book[(symbol_name, value_type)]['scenario_data'] = dict(sorted(self.symbols_book[(symbol_name, value_type)]['scenario_data'].items()))
 
-        symblist = [v for v in outputdict.values()]
+    def _join_all_symbols(self):
+        for symb in self.symbol_valuetype_dict:
+            self._join_scenarios_by_symbol(*symb)
+        return None
 
-        flag = -1
-        modifiers = dict()
-        for ix, scen in enumerate(self.data):
-            if symbol in scen.keys():
-                modifiers[self.shortscennames[scen["scenario"]]] = self.get_modifiers(
-                    scen, self.loopitems
-                )
-                flag = ix
-            else:
-                logger.info(f'   Symbol "{symbol}" is not in {scen["scenario"]}')
+    def __repr__(self):
+        return '''DataCollection()'''
 
-        if flag > -1:
 
-            for i, scen in enumerate(self.data):
-                if symbol in self.data[i]:
-                    idx = i
-                    break
+class SymbolsHandler:
+    def __init__(self, method:str, **kwargs):
+        ''' 
+        method: "folder" or "object"
+        kwargs:
+            folder_path: path to folder with symbol files
+            object: DataCollection object
+        '''
+        self.method = method
+        self.folder_path = None
+        self.symbols_book = None
+        self.input_method(method=method, **kwargs)
+        self.saved_symbols = {}
+        self.symbol_handler_token = str(uuid.uuid4()) # TODO: this can be changed by hashing the input file
 
-            symbol_data_example = self.data[idx][symbol]
-            symbdict = {}
-            symbdict['name'] = symbol
-            symbdict['dims'] = symbol_data_example['dims']
-            symbdict['type'] = symbol_data_example['type']
-            symbdict['symb_desc'] = symbol_data_example['symb_desc']
-            symbdict['data'] = symblist
-            symbdict["scen"] = self.shortscennames
-            symbdict["loop"] = list(self.loopitems.keys())
-            symbdict["modifiers"] = modifiers
-            symbdict["reporting"] = []
-
-            if symbol not in self.pathsbook.keys():
-                self.pathsbook[symbol] = {}
-            self.pathsbook[symbol]['v'] = symbdict
-            self.pathsbook[symbol]['m'] = symbdict
-            self.pathsbook[symbol]['lo'] = symbdict
-            self.pathsbook[symbol]['up'] = symbdict
-
-            return symbdict
+    def input_method(self, method:str, **kwargs):
+        if method == "object":
+            self.from_object(**kwargs)
+        elif method == "folder":
+            self.from_folder(**kwargs)
         else:
-            logger.info(f'Symbol "{symbol}" does not exist in any scenario')
-            return None
+            raise Exception('A method mus be provided from either "object" or "folder"')
 
-    def join_all_symbols(self, warningshow=True):
-        for symb in self.symbols:
-            self.join_scens_by_symbol(symb)
-        if warningshow:
-            logger.info('In a new python script or notebook you can access the data with this snippet: \n   from dieterpy import SymbolsHandler, Symbol \n   SH = SymbolsHandler("folder") \n   logger.info(SH.reporting) \n   Z = Symbol(name="Z", value_type="v", symbol_handler=SH) \n   Z.df  # <- Pandas DataFrame')
+    def from_object(self, object:DataCollection):
+        self.symbols_book = object.symbols_book
+        self.collector = object.collector
+        # self.scenarios_metadata = object.scenarios_metadata
+        self.short_names = object.short_names
+        # self.symbol_name_list = object.symbol_name_list
+
+    def from_folder(self, folder_path:str=None):
+        self.folder_path = folder_path
+        files = glob.glob(os.path.join(self.folder_path, "*.feather"))
+        for file in files:
+            pass
+
+    def append(self, symbol):
+        self.saved_symbols[(symbol.name, symbol.value_type)] = symbol
+
+    def save(self, folder_path=None):
+        if folder_path is None:
+            folder_path = self.folder_path
+        for symbol in self.saved_symbols.values():
+            symbol.save(folder_path)
+
+    def get_data(self, symbol_name, value_type):
+        if isinstance(self.symbols_book[(symbol_name, value_type)], dict):
+            return self.symbols_book[(symbol_name, value_type)]
+        # elif isinstance(self.symbols_book[(symbol_name, value_type)], str):
+        #     return open_symbol_file(self.symbols_book[(symbol_name, value_type)])
+
+    def __repr__(self):
+        return f'''SymbolsHandler(method='{self.method}')'''

@@ -15,7 +15,50 @@ def load_scenario_info(path):
     return info
 
 
+
 #### Load symbols from arrow - feather file ####
+
+def load_feather(path:str, **kwargs):
+    '''
+    Load custom feather file.
+    '''
+    table = ft.read_table(path)
+    meta_bstring = table.schema.metadata
+    meta_strings = {key.decode('utf-8'): value.decode('utf-8') for (key, value) in meta_bstring.items()}
+    meta_custom = {}
+    for (key, value) in meta_strings.items():
+        k = key.split('.')
+        if k[0] in ['symbol','value_type','dims','coords','scenario_id']:
+            meta_custom[key] = value
+    metadata = _get_metadata(meta_custom, sep = '.')
+    coo = table.to_pandas().to_numpy()
+    return {'symbol_name': metadata['symbol'], 
+            'coo':coo, 
+            'dims': metadata['dims'], 
+            'coords': metadata['coords'], 
+            'value_type': metadata['value_type']}
+
+def symbol_parser_feather(folder: str, symbol_names: list=[]):
+    '''
+    Parse all symbols from a folder and returns a dictionary
+    '''
+    symbol_dict_with_value_type = {}
+    for symbs in symbol_names:
+        symb_tp = _convert_symbol_name_to_tuple(symbs)
+        symbol_dict_with_value_type[symb_tp] = None
+
+    file_list = glob.glob(os.path.join(folder,'*/*.feather'))
+    symbol_list = []
+    for file in file_list:
+        symbol_info = _info_feather(file)
+        if (symbol_info['symbol_name'], symbol_info['value_type']) in symbol_dict_with_value_type if len(symbol_dict_with_value_type) != 0 else True:
+            symbol_dict = {}
+            symbol_dict['symbol_name'] = symbol_info['symbol_name']
+            symbol_dict['value_type']  = symbol_info['value_type']
+            symbol_dict['scenario_id'] = symbol_info['scenario_id']
+            symbol_dict['path']        = file
+            symbol_list.append(symbol_dict)
+    return symbol_list
 
 def _unflatten_dict(a, result = None, sep = '_'):
 
@@ -66,26 +109,6 @@ def _get_metadata(metadata, sep = '.'):
             meta_dict[key] = {dim: meta_dict[key][dim] for dim in meta_dict['dims']}
     return meta_dict
 
-def load_feather(path:str):
-    '''
-    Load custom feather file.
-    '''
-    table = ft.read_table(path)
-    meta_bstring = table.schema.metadata
-    meta_strings = {key.decode('utf-8'): value.decode('utf-8') for (key, value) in meta_bstring.items()}
-    meta_custom = {}
-    for (key, value) in meta_strings.items():
-        k = key.split('.')
-        if k[0] in ['symbol','value_type','dims','coords','scenario_id']:
-            meta_custom[key] = value
-    metadata = _get_metadata(meta_custom, sep = '.')
-    coo = table.to_pandas().to_numpy()
-    return {'symbol_name': metadata['symbol'], 
-            'coo':coo, 
-            'dims': metadata['dims'], 
-            'coords': metadata['coords'], 
-            'value_type': metadata['value_type']}
-
 def _info_feather(path:str):
     '''
     Load symbol info from feather file.
@@ -97,41 +120,59 @@ def _info_feather(path:str):
     scenario_id = meta_bstring[b'scenario_id'].decode('utf-8')
     return {'symbol_name': symbol_name, 'value_type': value_type, 'scenario_id': scenario_id}
 
-def symbol_parser_feather(folder: str, symbol_names: list=[]):
-    '''
-    Parse all symbols from a folder and returns a dictionary
-    '''
-    symbol_dict_with_value_type = {}
-    for symbs in symbol_names:
-        symb_tp = _convert_symbol_name_to_tuple(symbs)
-        symbol_dict_with_value_type[symb_tp] = None
 
-    file_list = glob.glob(os.path.join(folder,'*/*.feather'))
-    symbol_list = []
-    for file in file_list:
-        symbol_info = _info_feather(file)
-        if (symbol_info['symbol_name'], symbol_info['value_type']) in symbol_dict_with_value_type if len(symbol_dict_with_value_type) != 0 else True:
-            symbol_dict = {}
-            symbol_dict['symbol_name'] = symbol_info['symbol_name']
-            symbol_dict['value_type']  = symbol_info['value_type']
-            symbol_dict['scenario_id'] = symbol_info['scenario_id']
-            symbol_dict['path']        = file
-            symbol_list.append(symbol_dict)
-    return symbol_list
+#### Load symbols from gdx file ####
 
-def _convert_symbol_name_to_tuple(symbol_name: str):
-    '''
-    Convert symbol name to tuple.
-    '''
-    symb_list = symbol_name.split('.')
-    if len(symb_list) == 1:
-        symb_tp = (symb_list[0],'v')
-    elif len(symb_list) == 2:
-        symb_tp = (symb_list[0], symb_list[1])
-    else:
-        raise ValueError(f"Symbol name '{symbol_name}' is not valid")
-    return symb_tp
+def set_gams_dir(gams_dir: str = None):
+    """ 
+    This function will add GAMS.exe temporarily to the PATH environment variable.
 
+    WARNING: An incorrect path may cause python crashes!!!. Make sure GAMS path is correct.
+    """
+
+    from gdxcc import (
+        gdxCreateD,
+        new_gdxHandle_tp,
+        gdxClose,
+        gdxFree,
+        GMS_SSSIZE,
+    )
+
+    gdxHandle = new_gdxHandle_tp()
+    gdxCreateD(gdxHandle, gams_dir, GMS_SSSIZE)
+    gdxClose(gdxHandle)
+    gdxFree(gdxHandle)
+    return True
+
+def load_gdx(symbol_name: str, value_type: str='v', path: str='', gams_dir: str= None, **kwargs):
+    '''
+    Load custom GDX file.
+
+    Parameters
+    ----------
+    symbol_name : str
+        Name of the symbol to be extracted.
+    value_type : str, optional
+        Type of the symbol to be extracted. The default is 'v'.
+    path : str
+        Path to the gdx file.
+    gams_dir : str, optional
+
+    '''
+    value_types = {'v':0, 'm':1, 'lo':2, 'up':3, 'scale':4}
+    assert value_type in value_types.keys(), f'value_type must be one of the following: {value_types.keys()}'
+    metadata = _gdx_get_symbol_data_dict(symbol_name=symbol_name, gdx_file=path, gams_dir=gams_dir)
+    symbol = _gdx_get_symbol_array_str(symbol_name=symbol_name, gdx_file=path, gams_dir=gams_dir)
+    nrdims = len(metadata['dims'])
+    col_index = nrdims + value_types[value_type]
+    raw_coo = symbol[:, list(range(nrdims)) + [col_index]]
+    mask = raw_coo[:,nrdims] != 0.0
+    coo = raw_coo[mask,:]
+    return {'symbol_name': symbol_name,
+            'coo':coo,
+            'dims': metadata['dims'],
+            'coords': metadata['coords'],
+            'value_type': value_type}
 
 def symbol_parser_gdx(folder: str, symbol_names: list=[]):
     '''
@@ -169,31 +210,6 @@ def symbol_parser_gdx(folder: str, symbol_names: list=[]):
                                             'scenario_id':scen_id,
                                             'path':file})
     return symbol_list
-
-
-#### Load symbols from gdx file ####
-
-def set_gams_dir(gams_dir: str = None):
-    """ 
-    This function will add GAMS.exe temporarily to the PATH environment variable.
-
-    WARNING: An incorrect path may cause python crashes!!!. Make sure GAMS path is correct.
-    """
-
-    from gdxcc import (
-        gdxCreateD,
-        new_gdxHandle_tp,
-        gdxClose,
-        gdxFree,
-        GMS_SSSIZE,
-    )
-
-    gdxHandle = new_gdxHandle_tp()
-    gdxCreateD(gdxHandle, gams_dir, GMS_SSSIZE)
-    gdxClose(gdxHandle)
-    gdxFree(gdxHandle)
-    return True
-
 
 def _symbols_list_from_gdx(filename: str = None, gams_dir: str = None):
     """ It returns a list of symbols' names contained in the GDX file
@@ -277,35 +293,17 @@ def _gdx_get_symbol_data_dict(symbol_name: str, gdx_file: str, gams_dir: str=Non
     data['coords'] = {dim: list(np.sort(_gdx_get_symbol_array_str(symbol_name=dim, gdx_file=gdx_file, gams_dir=gams_dir)[:,0])) for dim in gdx_domain}
     return data
 
-def load_gdx(symbol_name: str, value_type: str='v', gdx_file: str='', gams_dir: str= None):
+#### Common functions ####
+
+def _convert_symbol_name_to_tuple(symbol_name: str):
     '''
-    Load custom GDX file.
-
-    Parameters
-    ----------
-    symbol_name : str
-        Name of the symbol to be extracted.
-    value_type : str, optional
-        Type of the symbol to be extracted. The default is 'v'.
-    gdx_file : str
-        Path to the gdx file.
-    gams_dir : str, optional
-
+    Convert symbol name to tuple.
     '''
-    value_types = {'v':0, 'm':1, 'lo':2, 'up':3, 'scale':4}
-    assert value_type in value_types.keys(), f'value_type must be one of the following: {value_types.keys()}'
-    metadata = _gdx_get_symbol_data_dict(symbol_name=symbol_name, gdx_file=gdx_file, gams_dir=gams_dir)
-    symbol = _gdx_get_symbol_array_str(symbol_name=symbol_name, gdx_file=gdx_file, gams_dir=gams_dir)
-    nrdims = len(metadata['dims'])
-    col_index = nrdims + value_types[value_type]
-    raw_coo = symbol[:, list(range(nrdims)) + [col_index]]
-    mask = raw_coo[:,nrdims] != 0.0
-    coo = raw_coo[mask,:]
-    return {'symbol_name': symbol_name,
-            'coo':coo,
-            'dims': metadata['dims'],
-            'coords': metadata['coords'],
-            'value_type': value_type}
-
-
-
+    symb_list = symbol_name.split('.')
+    if len(symb_list) == 1:
+        symb_tp = (symb_list[0],'v')
+    elif len(symb_list) == 2:
+        symb_tp = (symb_list[0], symb_list[1])
+    else:
+        raise ValueError(f"Symbol name '{symbol_name}' is not valid")
+    return symb_tp
