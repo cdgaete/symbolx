@@ -161,7 +161,7 @@ class Symbol:
             handler_data = symbol_handler.get_data(self.name, self.value_type)
             self.metadata = self.get_metadata(handler_data)
             self.symbol_handler_token = symbol_handler.symbol_handler_token
-            arr = build_array(self.name, self.value_type, symbol_handler)*1.0
+            arr = build_array(self.name, self.value_type, symbol_handler)
             dims = arr.dims[:]
             dims.remove('id')
             self.dims = dims
