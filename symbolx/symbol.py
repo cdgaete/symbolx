@@ -22,7 +22,7 @@ def insert_id_dim(symbol_name:str, value_type:str, scenario_id:str, symbol_handl
     """
     single_symbol = symbol_handler.symbols_book[(symbol_name, value_type)]['scenario_data'][scenario_id]
     single_array_dict = symbol_handler.collector[single_symbol['collector']]['loader'](**single_symbol)
-    oarray = ka.array(**single_array_dict)
+    oarray = ka.array(order=symbol_handler.order, **single_array_dict)
     narray = oarray.add_dim('id',[symbol_handler.short_names[scenario_id]])
     return narray
 
@@ -161,7 +161,7 @@ class Symbol:
             handler_data = symbol_handler.get_data(self.name, self.value_type)
             self.metadata = self.get_metadata(handler_data)
             self.symbol_handler_token = symbol_handler.symbol_handler_token
-            arr = build_array(self.name, self.value_type, symbol_handler)
+            arr = build_array(self.name, self.value_type, symbol_handler)*1.0
             dims = arr.dims[:]
             dims.remove('id')
             self.dims = dims

@@ -199,6 +199,7 @@ class SymbolsHandler:
         self.input_method(method=method, **kwargs)
         self.saved_symbols = {}
         self.symbol_handler_token = str(uuid.uuid4()) # TODO: this can be changed by hashing the input file
+        self.order = None
 
     def input_method(self, method:str, **kwargs):
         if method == "object":
