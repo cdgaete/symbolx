@@ -2,9 +2,13 @@ import glob
 import os
 import re
 import uuid
-import pyarrow.feather as ft
+import json
 from typing import Callable
 from .parser import load_scenario_info
+import karray as ka
+import pandas as pd
+
+from .settings import settings, allowed_string
 
 
 class DataCollection:
@@ -35,7 +39,7 @@ class DataCollection:
     def add_symbol_list(self, collector_name:str, symbol_list:list=[]): # optional
         self.collector[collector_name]['symbol_list'] = symbol_list
 
-    def adquire(self):
+    def adquire(self, id_integer=True):
         self.config_files = []
         self.config = {}
         self.data = []
@@ -59,7 +63,7 @@ class DataCollection:
         assert len(self.config) == len(self.config_files), "Config files with same id found"
 
         self._get_symbol_lists()
-        self._scenario_name_shortener()
+        self._scenario_name_shortener(id_integer)
         self._get_metadata_template()
         self._get_all_scenario_metadata()
         self._join_all_symbols()
@@ -77,7 +81,7 @@ class DataCollection:
 
         return None
     
-    def _scenario_name_shortener(self):
+    def _scenario_name_shortener(self, id_integer=True):
         flag = False
         pattern = re.compile(r"(\d+)", re.IGNORECASE)
         names = []
@@ -110,7 +114,10 @@ class DataCollection:
             if len(names) == len(names_set):
                 if len(names) == len(set(numbs)):
                     for name in names:
-                        shortname = "S" + pattern.search(name)[0].zfill(digit)
+                        if id_integer:
+                            shortname = int(pattern.search(name)[0])
+                        else:
+                            shortname = "S" + pattern.search(name)[0].zfill(digit)
                         shortnames[name] = shortname
                 else:
                     flag = True
@@ -118,7 +125,10 @@ class DataCollection:
                 flag = True
         if flag:
             for n, name in enumerate(names):
-                shortname = "S" + str(n).zfill(digit)
+                if id_integer:
+                    shortname = n
+                else:
+                    shortname = "S" + str(n).zfill(digit)
                 shortnames[name] = shortname
         self.short_names = shortnames
         return None
@@ -170,11 +180,20 @@ class DataCollection:
                 if 'short_names' not in self.symbols_book[(symbol_name, value_type)]:
                     self.symbols_book[(symbol_name, value_type)]['short_names'] = self.short_names
                 if 'metadata' not in self.symbols_book[(symbol_name, value_type)]:
-                    self.symbols_book[(symbol_name, value_type)]['metadata'] = self._get_symbol_metadata(symbol_name, value_type)
+                    self.symbols_book[(symbol_name, value_type)]['metadata'] = self._get_metadata(self._get_symbol_metadata(symbol_name, value_type))
                 if 'scenario_data' not in self.symbols_book[(symbol_name, value_type)]:
                     self.symbols_book[(symbol_name, value_type)]['scenario_data'] = {}
                 self.symbols_book[(symbol_name, value_type)]['scenario_data'][data['scenario_id']] = data
         self.symbols_book[(symbol_name, value_type)]['scenario_data'] = dict(sorted(self.symbols_book[(symbol_name, value_type)]['scenario_data'].items()))
+
+    def _get_metadata(self, raw_metadata):
+        short_id = self.short_names
+        dc = {}
+        for k, v in raw_metadata.items():
+            dc[short_id[k]] = {}
+            for key, value in v.items():
+                dc[short_id[k]][key] = value
+        return pd.DataFrame(dc).transpose().to_dict()
 
     def _join_all_symbols(self):
         for symb in self.symbol_valuetype_dict:
@@ -186,56 +205,90 @@ class DataCollection:
 
 
 class SymbolsHandler:
-    def __init__(self, method:str, **kwargs):
+    def __init__(self, method:str, folder_path:str=None, obj:DataCollection=None):
         ''' 
         method: "folder" or "object"
         kwargs:
             folder_path: path to folder with symbol files
             object: DataCollection object
         '''
+        assert isinstance(method, str), "Arg 'method' must be a string."
+        assert method in ["folder", "object"], "Arg 'method' must be either 'folder' or 'object'"
         self.method = method
         self.folder_path = None
         self.symbols_book = None
-        self.input_method(method=method, **kwargs)
-        self.saved_symbols = {}
         self.symbol_handler_token = str(uuid.uuid4()) # TODO: this can be changed by hashing the input file
-        self.order = None
+        self.order = ['id']
+        self.saved_symbols = {}
+        self.token_info = None
+        self.input_method(method=method, folder_path=folder_path, obj=obj)
+
 
     def input_method(self, method:str, **kwargs):
         if method == "object":
-            self.from_object(**kwargs)
+            self.from_object(obj=kwargs['obj'])
         elif method == "folder":
-            self.from_folder(**kwargs)
+            self.from_folder(folder_path=kwargs['folder_path'])
         else:
             raise Exception('A method mus be provided from either "object" or "folder"')
 
-    def from_object(self, object:DataCollection):
-        self.symbols_book = object.symbols_book
-        self.collector = object.collector
-        # self.scenarios_metadata = object.scenarios_metadata
-        self.short_names = object.short_names
-        # self.symbol_name_list = object.symbol_name_list
+    def from_object(self, obj:DataCollection):
+        self.symbols_book = obj.symbols_book
+        self.collector = obj.collector
+        self.short_names = obj.short_names
+        for n_v in self.symbols_book:
+            settings.append((*n_v,self.symbol_handler_token))
+
 
     def from_folder(self, folder_path:str=None):
+        self.token_info = {}
         self.folder_path = folder_path
         files = glob.glob(os.path.join(self.folder_path, "*.feather"))
+        self.symbols_book = {}
         for file in files:
-            pass
+            loaded_file_dict = from_feather_dict(file)
+            self.symbols_book[(loaded_file_dict['name'],loaded_file_dict['value_type'])] = file
+
+            token = loaded_file_dict['symbol_handler_token']
+            settings.append((loaded_file_dict['name'],loaded_file_dict['value_type'],loaded_file_dict['symbol_handler_token']))
+
+            if token not in self.token_info:
+                self.token_info[token] = {}
+            self.token_info[token][(loaded_file_dict['name'],loaded_file_dict['value_type'])] = file
+        if len(self.token_info) > 1:
+            print(f"There are Symbols' files with different symbol_handler_token in {folder_path}")
+            print("       Symbol's scenario short names or id's might be in conflict.")
+            print("       Make sure all Symbols are from the same symbol_handler_token")
+            print("       Otherwise, it may happen, for example, different scenarios have the same id.")
+            print("       See 'token_info' attribute of SymbolsHandler for more information")
+
 
     def append(self, symbol):
+        assert len(set(symbol.name).difference(set(allowed_string))) == 0, f"Symbol name '{symbol.name}' contains special characters. Please, change the name of the symbol. Allowed chars are: {allowed_string}"
         self.saved_symbols[(symbol.name, symbol.value_type)] = symbol
 
     def save(self, folder_path=None):
         if folder_path is None:
             folder_path = self.folder_path
         for symbol in self.saved_symbols.values():
-            symbol.save(folder_path)
+            file_name = f"{symbol.name}.{symbol.value_type}.{symbol.symbol_handler_token}.feather"
+            file_path = os.path.join(folder_path,file_name)
+            symbol.to_feather(file_path)
 
-    def get_data(self, symbol_name, value_type):
+    def get_info(self, symbol_name, value_type):
+        assert (symbol_name, value_type) in self.symbols_book, f"Pairs {(symbol_name, value_type)} not present in the symbols_book attribute of SymbolsHandler"
         if isinstance(self.symbols_book[(symbol_name, value_type)], dict):
             return self.symbols_book[(symbol_name, value_type)]
-        # elif isinstance(self.symbols_book[(symbol_name, value_type)], str):
-        #     return open_symbol_file(self.symbols_book[(symbol_name, value_type)])
+        elif isinstance(self.symbols_book[(symbol_name, value_type)], str):
+            return self.symbols_book[(symbol_name, value_type)]
 
     def __repr__(self):
         return f'''SymbolsHandler(method='{self.method}')'''
+
+
+def from_feather_dict(path):
+    arr, restored_table = ka.from_feather(path, with_table=True)
+    custom_meta_key = 'symbolx'
+    restored_meta_json = restored_table.schema.metadata[custom_meta_key.encode()]
+    restored_meta = json.loads(restored_meta_json)
+    return dict(array=arr,**restored_meta)

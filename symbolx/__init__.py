@@ -10,4 +10,7 @@ __author__ = 'Carlos Gaete-Morales'
 
 from .parser import set_gams_dir, symbol_parser_gdx, load_gdx, symbol_parser_feather, load_feather
 from .handler import DataCollection, SymbolsHandler
-from .symbol import Symbol
+from .symbol import Symbol, from_feather
+
+
+

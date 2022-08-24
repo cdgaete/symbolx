@@ -1,9 +1,12 @@
-from typing import Union
 import karray as ka
-from .handler import DataCollection, SymbolsHandler
 import pandas as pd
 import numpy as np
-
+import os
+import pyarrow.feather as ft
+import json
+from typing import Union
+from .handler import SymbolsHandler, from_feather_dict
+from .settings import settings, allowed_string, value_type_name_map
 
 
 def build_array(symbol_name:str, value_type:str, symbol_handler:SymbolsHandler):
@@ -11,7 +14,7 @@ def build_array(symbol_name:str, value_type:str, symbol_handler:SymbolsHandler):
     Create an array of all existing scenarios
     """
     list_of_arrays = []
-    for scenario_id in symbol_handler.symbols_book[(symbol_name, value_type)]['scenario_data']:
+    for scenario_id in symbol_handler.get_info(symbol_name, value_type)['scenario_data']:
         array_with_id = insert_id_dim(symbol_name, value_type, scenario_id, symbol_handler)
         list_of_arrays.append(array_with_id)
     return ka.concat(list_of_arrays)
@@ -20,213 +23,148 @@ def insert_id_dim(symbol_name:str, value_type:str, scenario_id:str, symbol_handl
     """
     Insert dimension id with the corresponding scenario_id.
     """
-    single_symbol = symbol_handler.symbols_book[(symbol_name, value_type)]['scenario_data'][scenario_id]
+    single_symbol = symbol_handler.get_info(symbol_name, value_type)['scenario_data'][scenario_id]
     single_array_dict = symbol_handler.collector[single_symbol['collector']]['loader'](**single_symbol)
     oarray = ka.array(order=symbol_handler.order, **single_array_dict)
     narray = oarray.add_dim('id',[symbol_handler.short_names[scenario_id]])
     return narray
 
+def from_feather(path):
+    return Symbol(**from_feather_dict(path))
 
 
 class Symbol:
     def __init__(
         self,
-        name: str = None,
-        value_type: str = None,
-        dims: list = None,
-        metadata: dict = None, # metadata
-        array: ka.array = None,
-        symbol_handler = None,
-        symbol_handler_token: str = None,
+        name: str=                      None,
+        value_type: str=                None,
+        metadata: dict=                 None,
+        array: ka.array=                None,
+        symbol_handler_token: str=      None,
+        symbol_handler: SymbolsHandler= None,
         ):
         '''
         A class for creating symbols.
         '''
         self.__dict__["_repo"] = {}
-        self.symbol_class = 'temp'
-        self.from_file = False
-        self.name = name
-        self.value_type = value_type
-        self.dims = dims
-        self.metadata = metadata
-        self.symbol_handler_token = symbol_handler_token
-        self.build_or_load(symbol_handler, name, value_type)
-        self.print_name(name, value_type)
-        self.collect_attributes_from_class(symbol_handler, array)
+        if symbol_handler is not None:
+            if 'object' == symbol_handler.method:
+                self.build(symbol_handler, name, value_type)
+            elif 'folder' == symbol_handler.method:
+                self.load(symbol_handler, name, value_type)
+        else:
+            if settings.exists((name,value_type,symbol_handler_token)):
+                print("The symbol name has already been taken by another Symbol stored in SymbolsHandler.")
+                print("Please choose another name to avoid overwriting the existing symbol when saving the current symbol.")
+            self.name=                 name
+            self.value_type=           value_type
+            self.metadata=             metadata
+            self.array=                array
+            self.symbol_handler_token= symbol_handler_token
+        self.check_input()
+
 
     def __setattr__(self, name, value):
-        if name == "symbol_class":
-            self._repo[name] = value
-        elif name == "array":
-            if self.symbol_class in ['derived','temp']:
-                self.set_array(value)
-            else:
-                raise Exception(f"{self.symbol_class} symbols can not change or alter any attribute")
-        elif name == "df":
-            if self.symbol_class in ['derived']:
-                self.set_array_from_df(value)
-            else:
-                raise Exception("Cannot set df for native symbol class")
-        else:
-            if self.symbol_class in ['derived','temp']:
-                self._repo[name] = value
-            else:
-                raise Exception(f"{self.symbol_class} symbols can not change or alter any attribute")
+        self._repo[name] = value
 
     def __getattr__(self, name):
-        if name == "df":
-            return self.get_df()
+        if name == "xxxxx":
+            # Here if does not exist or is None: if statement
+            # generate and save: self._repo[name] = function or value
+            # finally handover: return self._repo[name]
+            return None
         else:
             return self._repo[name]
 
-    def build_or_load(self, symbol_handler, name=None, value_type=None):
-        if symbol_handler is None:
-            self.symbol_class = "derived"
-        else:
-            if symbol_handler.method == "folder":
-                self.from_file = True
-                return self.load_symbol(symbol_handler, name, value_type)
-            elif symbol_handler.method == "object":
-                self.symbol_class = "temp"
+    def build(self, symbol_handler:SymbolsHandler, name: str=None, value_type: str=None):
+        assert isinstance(symbol_handler, SymbolsHandler), "'symbol_handler' must be a SymbolsHandler object"
+        assert isinstance(name, str), "'name' must be a string"
+        assert isinstance(value_type, str), "'value_type' must be a string"
+        print(f"{name:<25} value_type: {value_type_name_map[value_type]} ({value_type})")
 
-    def load_symbol(self, symbol_handler, name, value_type):
-        assert name is not None, "Name of symbol must be provided"
-        assert value_type is not None, "Value type of symbol must be provided"
-        # logger.info(f"{name:<25} value_type: {value_type_name_map[value_type]}")
-        info_file_path = symbol_handler.symbols_book[(name, value_type)]  # >>>>> here we need the SH read the file first get metadata and define name and value type
+        key = (name,value_type)
+        assert key in symbol_handler.symbols_book, f"'{key}' is not present in 'symbol_handler.symbols_book' dictionary"
 
-        # with open(info_file_path, 'r') as f:
-        #     dc = yaml.load(f, Loader=yaml.FullLoader)
+        self.name=                 name
+        self.value_type=           value_type
+        self.metadata=             symbol_handler.get_info(*key)['metadata']
+        self.array=                build_array(name, value_type, symbol_handler)
+        self.symbol_handler_token= symbol_handler.symbol_handler_token
+        
+    def load(self, symbol_handler:SymbolsHandler, name: str=None, value_type: str=None):
+        assert isinstance(symbol_handler, SymbolsHandler), "'symbol_handler' must be a SymbolsHandler object"
+        assert isinstance(name, str), "'name' must be a string"
+        assert isinstance(value_type, str), "'value_type' must be a string"
+        print(f"{name:<25} value_type: {value_type_name_map[value_type]} ({value_type})")
 
-        # assert name == dc['name'], "Name in info file does not match name in symbol"
-        # assert value_type == dc['value_type'], "Value type in info file does not match value type in symbol"
-        # self.symbol_class = 'temp'
-        # self.name = dc['name']
-        # self.value_type = dc['value_type']
-        # self.check_value_type()
-        # self.dims = dc['dims']
-        # self.metadata = dc['metadata']
-        # self.symbol_handler_token = dc['symbol_handler_token']
-        # file_base_name = f"{self.name}.{self.value_type}"
-        # array_file_path = os.path.join(os.path.dirname(info_file_path), file_base_name + '.gdx')
-        # self.array = Array().from_gdx(symbol_name=self.name, value_type=self.value_type, gdx_path=array_file_path, gams_dir=None)
-        # self.symbol_class = dc['symbol_class']
-        return self
+        key = (name,value_type)
+        assert key in symbol_handler.symbols_book, f"'{key}' is not present in 'symbol_handler.symbols_book' dictionary"
 
-    def save(self, folder_path=None, compression=True):
-        '''
-        compression Boolean: True if compression is desired
-        '''
-        extension_map = {'unzip':'.gdx', 'zip':'.gdx.gz'}
-        # if compression:
-        #     zip = 'zip'
-        # else:
-        #     zip = 'unzip'
-        # file_base_name = f"{self.name}.{self.value_type}"
-        # folder_path_ = folder_path or settings.REPORT_DIR_ABS
-        # info_file = os.path.join(folder_path_, file_base_name + ".yaml")
-        # self.array_file_extension = extension_map[zip]
-        # dict_copy = {k:v for k,v in self._repo.items() if k not in ['array']}
-        # os.makedirs(folder_path_, exist_ok=True)
-        # with open(info_file, 'w') as f:
-        #     yaml.dump(dict_copy, f, indent=4)
+        file_path = symbol_handler.get_info(*key)
+        symbol_dict = from_feather_dict(file_path)
+        self.name=                 name
+        self.value_type=           value_type
+        self.metadata=             symbol_dict['metadata']
+        self.array=                symbol_dict['array']
+        self.symbol_handler_token= symbol_dict['symbol_handler_token']
 
-        # if compression:
-        #     with gzip.open(os.path.join(folder_path_, file_base_name + self.array_file_extension), 'wb') as f:
-        #         self.array.to_gdx(f)
-        # else:
-        #     with open(os.path.join(folder_path_, file_base_name + self.array_file_extension), 'wb') as f:
-        #         self.array.to_gdx(f)
+    def to_arrow(self):
+        table = self.array.to_arrow()
+        existing_meta = table.schema.metadata
+        custom_meta_key = 'symbolx'
+        custom_metadata = {}
+        attr = ['name', 'value_type', 'metadata','symbol_handler_token']
+        for k,v in self._repo.items():
+            if k in attr:
+                custom_metadata[k] = v
 
-    def check_input_from_class(self, array):
-        if self.symbol_class == "temp":
-            assert self.name is not None, "Name of symbol must be provided"
-            assert self.value_type is not None, "Value type of symbol must be provided"
-        elif self.symbol_class == 'derived':
-            assert self.name is not None, "Name of symbol must be provided"
-            assert self.value_type is not None, "Value type of symbol must be provided"
-            assert self.dims is not None, "Dims of symbol must be provided"
-            assert self.metadata is not None, "metadata of symbol must be provided"
-            assert self.symbol_handler_token is not None, "Symbol handler token must be provided"
-            if self.from_file:
-                assert self.array is not None and isinstance(array, ka.array), "Array must be provided"
-            else:
-                assert array is not None and isinstance(array, ka.array), "Array must be provided"
-        else:
-            raise Exception('A symbol_class must be provided')
+        custom_meta_json = json.dumps(custom_metadata)
+        existing_meta = table.schema.metadata
+        combined_meta = {custom_meta_key.encode() : custom_meta_json.encode(),**existing_meta}
+        table = table.replace_schema_metadata(combined_meta)
+        return table
 
-    def collect_attributes_from_class(self, symbol_handler, array):
-        if self.symbol_class == "temp":
-            self.check_value_type()
-            handler_data = symbol_handler.get_data(self.name, self.value_type)
-            self.metadata = self.get_metadata(handler_data)
-            self.symbol_handler_token = symbol_handler.symbol_handler_token
-            arr = build_array(self.name, self.value_type, symbol_handler)
-            dims = arr.dims[:]
-            dims.remove('id')
-            self.dims = dims
-            self.array = arr
-            self.symbol_class = "native"
-        elif self.symbol_class == 'derived':
-            self.check_value_type()
-            if not self.from_file:
-                self.array = array
+    def to_feather(self, path:str):
+        sets = set(allowed_string)
+        sets.add(os.path.sep)
+        joint = ''.join(sorted(sets))
+        assert len(set(path).difference(sets)) == 0, f"There are/is special characters in path '{path}'. Allowed chars are: {joint}"
 
-    def print_name(self, name, value_type):
-        if self.symbol_class == "temp":
-            pass
-            # logger.info(f"{name:<25} value_type: {value_type_name_map[value_type]}")
+        table = self.to_arrow()
+        ft.write_feather(table, path)
+        print(f"{path}")
+        return None
 
-    def check_value_type(self):
-        assert self.value_type in ['v','m'], "value_type argument must be either 'v' or 'm'"
+    def check_input(self):
+        assert self.name is not None and isinstance(self.name, str), "Name of symbol must be provided."
+        assert self.value_type is not None and isinstance(self.value_type, str), "Value type of symbol must be provided."
+        assert self.metadata is not None and isinstance(self.metadata, dict), "metadata of symbol must be provided."
+        assert self.array is not None and isinstance(self.array, ka.array), "Array must be provided."
+        assert self.symbol_handler_token is not None and isinstance(self.symbol_handler_token, str), "Symbol handler token must be provided."
 
-    def get_metadata(self, handler_data):
-        metadata = handler_data["metadata"]
-        short_id = handler_data["short_names"]
-        dc = {}
-        for k, v in metadata.items():
-            dc[short_id[k]] = {}
-            for key, value in v.items():
-                dc[short_id[k]][key] = value
-        return pd.DataFrame(dc).transpose().to_dict()
+    @property
+    def dims(self):
+        return self.array.dims
 
-    def set_array(self, array):
-        as_index = set(['id']).union(self.dims)
-        assert set(array.dims) == as_index, f"array.dims {set(array.dims)}, must have dimensions: {as_index}"
-        self._repo['array'] = array
+    def set_array_from_pandas(self, df, order=['id']):
+        array = ka.from_pandas(df, order=order)
+        # TODO: Include sanity checks
+        self.array = array
+        return None
 
-    def set_array_from_df(self, df): # TODO
-        pass
-        # as_index = ['id'] + self.dims
-        # columns  = as_index + ['value']
-        # df_columns = df.columns.tolist()
-        # assert 'symbol' in df_columns, "df must have a column 'symbol'"
-        # df_col_set = set([col for col in df_columns if col != 'symbol'])
-        # assert set(columns) == df_col_set, f"Dataframe columns must be: {str(set(columns).union(['symbol']))}"
-        # try:
-        #     serie = df[columns].set_index(as_index)['value']
-        #     self.array = DataArrayFactory(array_module=settings.ARRAY_MODULE).from_serie(serie)
-        # except ValueError:
-        #     serie = df[columns].pivot_table(index=as_index, values='value')['value']
-        #     self.array = DataArrayFactory(array_module=settings.ARRAY_MODULE).from_serie(serie)
-
-    def get_df(self): # TODO
-        df = self.array.to_dataframe()
-        df = df.reset_index()
-        df['symbol'] = self.name
-        return df
-
+    def get_df(self):
+        return self.array.to_dataframe()
 
     @property
     def dfm(self):
-        dfm = self.get_df().copy()
+        dfm = self.get_df().reset_index()
         for k, v in self.metadata.items():
             dfm[k] = dfm["id"].map(v)
         return dfm
 
     @property
     def dfc(self):
-        dfc = self.get_df().copy()
+        dfc = self.get_df().reset_index()
         for k, v in self.metadata.items():
             if 'custom_' in k:
                 dfc[k] = dfc["id"].map(v)
@@ -240,15 +178,15 @@ class Symbol:
             new_metadata[elem] = {**self_metadata[elem],**other_metadata[elem]}
         return new_metadata
 
-    def new_symbol(self, array, new_name, new_dims, other=None):
+    def new_symbol(self, array, new_name, other=None):
         if isinstance(other, Symbol):
             assert self.symbol_handler_token == other.symbol_handler_token, "Symbol handler tokens must be the same"
             new_metadata = self.metadata_union(other)
-        elif other is None:
+        elif other is None or isinstance(other,(int,float)):
             new_metadata = self.metadata
         else:
-            raise Exception(f'other must be a Symbol object or None, but it is: {str(type(other))}')
-        new_object = Symbol(name=new_name, value_type='v', dims=new_dims,
+            raise Exception(f'other must be either a Symbol object, int, float or None, but it is: {str(type(other))}')
+        new_object = Symbol(name=new_name, value_type='v',
                             metadata=new_metadata, array=array, 
                             symbol_handler_token=self.symbol_handler_token)
         return new_object
@@ -256,20 +194,32 @@ class Symbol:
     def __add__(self, other):
         flag = False
         if isinstance(other, (int, float)):
-            # Operation
             new_array = self.array + other
-            # Operation
-            new_name =  new_array.name
-            new_dims = self.dims
-            return self.new_symbol(new_array, new_name, new_dims)
+            new_name =  f"({self.name})+{str(other)}"
+            return self.new_symbol(new_array, new_name, other)
         elif isinstance(other, Symbol):
             if set(self.dims) == set(other.dims):
-                # Operation
-                new_array = gams_symbol_operation(self.array, other.array, '+', debug=0)
-                # Operation
-                new_name = new_array.name
-                new_dims = self.dims
-                return self.new_symbol(new_array, new_name, new_dims, other)
+                new_array = self.array + other.array
+                new_name = f"({self.name})+({other.name})"
+                return self.new_symbol(new_array, new_name, other)
+            else:
+                flag = True
+            if flag:
+                raise Exception(f'dims are not equal. {self.name} Dims: {self.dims}, {other.name} Dims: {other.dims}')
+        else:
+            raise Exception(f'{type(other)} is not supported')
+
+    def __sub__(self, other):
+        flag = False
+        if isinstance(other, (int, float)):
+            new_array = self.array - other
+            new_name =  f"({self.name})-{str(other)}"
+            return self.new_symbol(new_array, new_name, other)
+        elif isinstance(other, Symbol):
+            if set(self.dims) == set(other.dims):
+                new_array = self.array - other.array
+                new_name = f"({self.name})-({other.name})"
+                return self.new_symbol(new_array, new_name, other)
             else:
                 flag = True
             if flag:
@@ -279,148 +229,79 @@ class Symbol:
 
     def __mul__(self, other):
         if isinstance(other, (int, float)):
-            # Operation
             new_array = self.array * other
-            # Operation
-            new_name = new_array.name
-            new_dims = self.dims
-            return self.new_symbol(new_array, new_name, new_dims)
-
+            new_name = f"({self.name})*{str(other)}"
+            return self.new_symbol(new_array, new_name, other)
         elif isinstance(other, Symbol):
             diffdims = list(set(self.dims).symmetric_difference(other.dims))
             lendiff = len(diffdims)
             if set(self.dims) == set(other.dims):
-                # Operation
-                new_array = gams_symbol_operation(self.array, other.array, '*', debug=0)
-                # Operation
-                new_name = new_array.name
-                new_dims = self.dims
-                return self.new_symbol(new_array, new_name, new_dims, other)
-
+                new_array = self.array * other.array
+                new_name = f"({self.name})*({other.name})"
+                return self.new_symbol(new_array, new_name, other)
             elif lendiff == 1:
-                dim = diffdims[0]
-                # Operation
-                new_array = gams_symbol_operation(self.array, other.array, '*', debug=0)
-                # Operation
-                new_name = new_array.name
-                new_dims = [dim for dim in new_array.dims if dim != 'id']
-                # logger.info(f'Piece-wise multiplication as "{dim}" dim is only in one symbol')
-                return self.new_symbol(new_array, new_name, new_dims, other)
-
+                new_array = self.array * other.array
+                new_name = f"({self.name})*({other.name})"
+                return self.new_symbol(new_array, new_name, other)
             elif lendiff > 1:
                 common_dims = list(set(self.dims).intersection(other.dims))
                 if len(common_dims) > 0:
-                    # Operation
-                    new_array = gams_symbol_operation(self.array, other.array, '*', debug=0)
-                    # Operation
-                    new_name = new_array.name
-                    new_dims = set(self.dims).union(other.dims)
-                    # logger.info(f'The difference in dimensions is greater than one. Common {common_dims}, Different: {diffdims}')
-                    return self.new_symbol(new_array, new_name, new_dims, other)
+                    new_array = self.array * other.array
+                    new_name = f"({self.name})*({other.name})"
+                    return self.new_symbol(new_array, new_name, other)
                 else:
                     raise Exception(f"The difference in dimensions is greater than one: '{diffdims}' and has no common dimensions")
         else:
             raise Exception(f'{type(other)} is not supported')
 
-    def __sub__(self, other):
-        flag = False
-        if isinstance(other, (int, float)):
-            # Operation
-            new_array = self.array - other
-            # Operation
-            new_name =  new_array.name
-            new_dims = self.dims
-            return self.new_symbol(new_array, new_name, new_dims)
-        elif isinstance(other, Symbol):
-            if set(self.dims) == set(other.dims):
-                # Operation
-                new_array = gams_symbol_operation(self.array, other.array, '-', debug=0)
-                # Operation
-                new_name = new_array.name
-                new_dims = self.dims
-                return self.new_symbol(new_array, new_name, new_dims, other)
-            else:
-                flag = True
-            if flag:
-                raise Exception(f'dims are not equal. {self.name} Dims: {self.dims}, {other.name} Dims: {other.dims}')
-        else:
-            raise Exception(f'{type(other)} is not supported')
-
-
     def __truediv__(self, other):
         if isinstance(other, (int, float)):
-            # Operation
             new_array = self.array / other
-            # Operation
-            new_name = new_array.name
-            new_dims = self.dims
-            return self.new_symbol(new_array, new_name, new_dims)
-
+            new_name = f"({self.name})/{str(other)}"
+            return self.new_symbol(new_array, new_name, other)
         elif isinstance(other, object):
-            # logger.info(f'be aware that zero division might occur')
-            # TODO: If zero division, use pandas instead of gams -> inefficient but allows to continue
             diffdims = set(self.dims).symmetric_difference(other.dims)
             lendiff = len(diffdims)
-
             if set(self.dims) == set(other.dims):
-                # Operation
-                new_array = gams_symbol_operation(self.array, other.array, '/', debug=1)
-                # Operation
-                new_name = new_array.name
-                new_dims = self.dims
-                return self.new_symbol(new_array, new_name, new_dims, other)
-
+                new_array = self.array / other.array
+                new_name = f"({self.name})/({other.name})"
+                return self.new_symbol(new_array, new_name, other)
             elif lendiff == 1:
-                dim = diffdims[0]
-                common_dims = set(self.dims).intersection(other.dims)
-                # Operation
-                new_array = gams_symbol_operation(self.array, other.array, '/', debug=1)
-                # Operation
-                new_name = new_array.name
-                new_dims = self.dims.union(other.dims)
-                # logger.info(f'Piece-wise division as "{dim}" dim is only in one symbol')
-                return self.new_symbol(new_array, new_name, new_dims, other)
+                new_array = self.array / other.array
+                new_name = f"({self.name})/({other.name})"
+                return self.new_symbol(new_array, new_name, other)
 
             elif lendiff > 1:
                 raise Exception(f"The difference in dimensions is greater than one: '{diffdims}'")
         else:
             raise Exception("The second term is not known, must be a int, float or a Symbol object")
 
-    def __rtruediv__(self, other):
-        if isinstance(other, (int, float)):
-            # Operation
-            new_array = other/self.array
-            # Operation
-            new_name = new_array.name
-            new_dims = self.dims
-            return self.new_symbol(new_array, new_name, new_dims)
-
-    def __rmul__(self, other):
-        if isinstance(other, (int, float)):
-            # Operation
-            new_array = other*self.array
-            # Operation
-            new_name = new_array.name
-            new_dims = self.dims
-            return self.new_symbol(new_array, new_name, new_dims)
-
     def __radd__(self, other):
         if isinstance(other, (int, float)):
-            # Operation
             new_array =  other + self.array
-            # Operation
-            new_name = new_array.name
-            new_dims = self.dims
-            return self.new_symbol(new_array, new_name, new_dims)
+            new_name = f"{str(other)}+({self.name})"
+            return self.new_symbol(new_array, new_name, other)
 
     def __rsub__(self, other):
         if isinstance(other, (int, float)):
-            # Operation
-            new_object = other - self.array
-            # Operation
-            new_name = new_object.name
-            new_dims = self.dims
-            return self.new_symbol(new_object, new_name, new_dims)
+            new_array = other - self.array
+            new_name = f"{str(other)}-({self.name})"
+            return self.new_symbol(new_array, new_name, other)
+
+    def __rmul__(self, other):
+        if isinstance(other, (int, float)):
+            new_array = other*self.array
+            new_name = f"{str(other)}*({self.name})"
+            return self.new_symbol(new_array, new_name, other)
+
+    def __rtruediv__(self, other):
+        if isinstance(other, (int, float)):
+            new_array = other/self.array
+            new_name = f"{str(other)}/({self.name})"
+            return self.new_symbol(new_array, new_name, other)
+
+
+
 
     # @staticmethod
     # def reduce(array: Union[xr.DataArray,sc.DataArray], dim: str, func: str = 'sum'):
@@ -436,29 +317,29 @@ class Symbol:
     #     new_array = self.reduce(self.array, dim, aggfunc)
     #     return self.new_symbol(new_array, new_name, new_dims)
 
-    def rename(self, new_name: str):
-        new_array = self.array
-        new_dims = self.dims
-        return self.new_symbol(new_array, new_name, new_dims)
+    # def rename(self, new_name: str):
+    #     new_array = self.array
+    #     new_dims = self.dims
+    #     return self.new_symbol(new_array, new_name)
 
-    # def expand_dim(self, new_dim, unique_coord):
-    #     if settings.ARRAY_MODULE == 'scipp':
-    #         nparr = self.array.data.values
-    #         dims = self.array.dims
-    #         coords = {dim: self.array.coords[dim] for dim in self.array.coords}
-    #         new_data = {}
-    #         new_data['data'] = sc.array(dims=dims + (new_dim,), values=nparr[..., np.newaxis].tolist())
-    #         new_data['coords'] = coords
-    #         new_data['coords']['id'] = sc.array(dims=[new_dim], values=[unique_coord], unit=None)
-    #         arr_plus_new_coords = sc.DataArray(**new_data)
-    #         arr_plus_new_coords.name = 'value'
-    #         return arr_plus_new_coords
+    def expand_dim(self, new_dim, unique_coord):
+        if settings.ARRAY_MODULE == 'scipp':
+            nparr = self.array.data.values
+            dims = self.array.dims
+            coords = {dim: self.array.coords[dim] for dim in self.array.coords}
+            new_data = {}
+            new_data['data'] = sc.array(dims=dims + (new_dim,), values=nparr[..., np.newaxis].tolist())
+            new_data['coords'] = coords
+            new_data['coords']['id'] = sc.array(dims=[new_dim], values=[unique_coord], unit=None)
+            arr_plus_new_coords = sc.DataArray(**new_data)
+            arr_plus_new_coords.name = 'value'
+            return arr_plus_new_coords
 
-    #     elif settings.ARRAY_MODULE == 'xarray':
-    #         arr_plus_new_coords = self.array.assign_coords(**{new_dim:unique_coord})
-    #         arr_plus_new_coords = arr_plus_new_coords.expand_dims(dim=new_dim, axis=-1)
-    #         arr_plus_new_coords.name = 'value'
-    #         return arr_plus_new_coords
+        elif settings.ARRAY_MODULE == 'xarray':
+            arr_plus_new_coords = self.array.assign_coords(**{new_dim:unique_coord})
+            arr_plus_new_coords = arr_plus_new_coords.expand_dims(dim=new_dim, axis=-1)
+            arr_plus_new_coords.name = 'value'
+            return arr_plus_new_coords
 
 
 # # Until here
@@ -533,11 +414,10 @@ class Symbol:
         if len(self.dims) > 0:
             elements = {}
             for dim in self.dims:
-                elements[dim] = list(self.array.coords[dim].values)
+                elements[dim] = list(self.array.coords[dim])
             return elements
         else:
-            pass
-            # logger.info('This Symbol has no dimensions')
+            raise Exception("Symbol has no dimension") #TODO: Check the existence of one dimension 'id' at least
 
     def rename_dim(self, old_dim: str, new_dim: str):
         """ This function renames a dimension in a symbol.
@@ -558,9 +438,9 @@ class Symbol:
     def add_dim(self, dim_name: str, value: Union[str,dict]):
         '''
         dim_name: new dimension name
-        value: if value is a string, the dimension column will contain this value only.
-               if value is a dict, the dict must look like {column_header:{column_element: new_element_name}}
-               where column_header must currently exists and all column_elements must have a new_element_name.
+        value:  if value is a string, the dimension column will contain this value only.
+                if value is a dict, the dict must look like {column_header:{column_element: new_element_name}}
+                where column_header must currently exists and all column_elements must have a new_element_name.
         '''
         if isinstance(value, str):
             new_array = self.expand_dim(dim_name, value)
@@ -862,8 +742,10 @@ class Symbol:
 #         new_object.name = f"({self.get('name')}).transform({subset_of_sets},{func},{condition},{value})"
 #         return new_object
 
-    def __repr__(self):
-        return f'''Symbol(name='{self.name}', \n       value_type='{self.value_type}', \n       dims={self.dims}'''
+    # def __repr__(self):
+    #     return f'''Symbol(name='{self.name}', \n       value_type='{self.value_type}', \n       dims={self.dims}'''
+
+
 
 
 
