@@ -30,3 +30,7 @@ class Settings:
         return self.name_value_type_token
 
 settings = Settings()
+
+
+# TODO: create a union of all array.coords used sofar. collect all uniques from coo from used arrays.
+#       Then compare both to warn which element never used to improve efficiency
