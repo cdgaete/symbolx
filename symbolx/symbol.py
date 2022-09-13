@@ -26,7 +26,7 @@ def insert_id_dim(symbol_name:str, value_type:str, scenario_id:str, symbol_handl
     single_symbol = symbol_handler.get_info(symbol_name, value_type)['scenario_data'][scenario_id]
     single_array_dict = symbol_handler.collector[single_symbol['collector']]['loader'](**single_symbol)
     oarray = ka.array(order=symbol_handler.order, **single_array_dict)
-    narray = oarray.add_dim('id',[symbol_handler.short_names[scenario_id]])
+    narray = oarray.add_dim(id=symbol_handler.short_names[scenario_id])
     return narray
 
 def from_feather(path):
@@ -62,17 +62,33 @@ class Symbol:
             self.array=                array
             self.symbol_handler_token= symbol_handler_token
         self.check_input()
+        # optional attributes
+        self.df = None
 
 
     def __setattr__(self, name, value):
         self._repo[name] = value
 
     def __getattr__(self, name):
-        if name == "xxxxx":
-            # Here if does not exist or is None: if statement
-            # generate and save: self._repo[name] = function or value
-            # finally handover: return self._repo[name]
-            return None
+        if name.startswith('_'):
+            raise AttributeError(name) # ipython requirement for repr_html
+        if name == "df":
+            if name in self._repo:
+                if self._repo[name] is None:
+                    self._repo[name] = self.array.to_dataframe()
+                    return self._repo[name].copy()
+                else:
+                    #Sanity check
+                    df = self._repo[name]
+                    dense = df.values.reshape(self.array.shape)
+                    if np.allclose(dense, self.array.dense_):
+                        return df.copy()
+                    else:
+                        print(f"Getting df again...")
+                        self._repo[name] = self.array.to_dataframe()
+                        return self._repo[name].copy()
+            else:
+                self.definition_msg(name) # dev msg
         else:
             return self._repo[name]
 
@@ -146,25 +162,16 @@ class Symbol:
     def dims(self):
         return self.array.dims
 
-    def set_array_from_pandas(self, df, order=['id']):
-        array = ka.from_pandas(df, order=order)
-        # TODO: Include sanity checks
-        self.array = array
-        return None
-
-    def get_df(self):
-        return self.array.to_dataframe()
-
     @property
     def dfm(self):
-        dfm = self.get_df().reset_index()
+        dfm = self.df.reset_index()
         for k, v in self.metadata.items():
             dfm[k] = dfm["id"].map(v)
         return dfm
 
     @property
     def dfc(self):
-        dfc = self.get_df().reset_index()
+        dfc = self.df.reset_index()
         for k, v in self.metadata.items():
             if 'custom_' in k:
                 dfc[k] = dfc["id"].map(v)
@@ -302,44 +309,24 @@ class Symbol:
 
 
 
+    def rename(self, new_name: str):
+        return self.new_symbol(self.array, new_name)
 
-    # @staticmethod
-    # def reduce(array: Union[xr.DataArray,sc.DataArray], dim: str, func: str = 'sum'):
-    #     if func == 'sum':
-    #         new_array = array.sum(dim=dim)
-    #     elif func == 'mean':
-    #         new_array = array.mean(dim=dim)
-    #     return new_array
+    def dimreduc(self, dim:str='h', aggfunc:str='sum'):
+        '''
+        aggfunc in ['sum','mul','mean'], defult 'sum'
+        '''
+        new_array = self.array.reduce(dim, aggfunc)
+        new_name = f"({self.name}).dimreduc({dim},{aggfunc})"
+        return self.new_symbol(new_array, new_name)
 
-    # def dimreduce(self, dim: str='h', aggfunc='sum'):
-    #     new_dims = list(set(self.dims).symmetric_difference([dim]))
-    #     new_name = f"({self.name}).dimreduce({dim})"
-    #     new_array = self.reduce(self.array, dim, aggfunc)
-    #     return self.new_symbol(new_array, new_name, new_dims)
+    def from_pandas(self, df):
+        # TODO: add more sanity check.
+        # TODO: allow subsets of array.coords (we limit the use of this function to exceptional cases)
+        new_array = ka.from_pandas(df, dims=self.array.dims, order=self.array.order)
+        new_name = f"({self.name}).from_pandas(df)"
+        return self.new_symbol(new_array, new_name)
 
-    # def rename(self, new_name: str):
-    #     new_array = self.array
-    #     new_dims = self.dims
-    #     return self.new_symbol(new_array, new_name)
-
-    def expand_dim(self, new_dim, unique_coord):
-        if settings.ARRAY_MODULE == 'scipp':
-            nparr = self.array.data.values
-            dims = self.array.dims
-            coords = {dim: self.array.coords[dim] for dim in self.array.coords}
-            new_data = {}
-            new_data['data'] = sc.array(dims=dims + (new_dim,), values=nparr[..., np.newaxis].tolist())
-            new_data['coords'] = coords
-            new_data['coords']['id'] = sc.array(dims=[new_dim], values=[unique_coord], unit=None)
-            arr_plus_new_coords = sc.DataArray(**new_data)
-            arr_plus_new_coords.name = 'value'
-            return arr_plus_new_coords
-
-        elif settings.ARRAY_MODULE == 'xarray':
-            arr_plus_new_coords = self.array.assign_coords(**{new_dim:unique_coord})
-            arr_plus_new_coords = arr_plus_new_coords.expand_dims(dim=new_dim, axis=-1)
-            arr_plus_new_coords.name = 'value'
-            return arr_plus_new_coords
 
 
 # # Until here
@@ -411,15 +398,10 @@ class Symbol:
 
     @property
     def items(self):
-        if len(self.dims) > 0:
-            elements = {}
-            for dim in self.dims:
-                elements[dim] = list(self.array.coords[dim])
-            return elements
-        else:
-            raise Exception("Symbol has no dimension") #TODO: Check the existence of one dimension 'id' at least
+        return self.array.coords
 
-    def rename_dim(self, old_dim: str, new_dim: str):
+
+    def rename_dim(self, **kwargs):
         """ This function renames a dimension in a symbol.
 
         Args:
@@ -429,36 +411,26 @@ class Symbol:
         Returns:
             symbol: Returns a new symbol with the renamed dimension.
         """
-        new_array = self.array.rename({old_dim: new_dim})
-        new_name = f"({self.name}).rename_dim({old_dim},{new_dim})"
-        new_dims = self.dims + [new_dim]
-        new_dims.remove(old_dim)
-        return self.new_symbol(new_array, new_name, new_dims)
+        new_array = self.array.rename(**kwargs)
+        new_name = f"({self.name}).rename_dim(**{kwargs})"
+        return self.new_symbol(new_array, new_name)
         
-    def add_dim(self, dim_name: str, value: Union[str,dict]):
+    def add_dim(self, dim_name: str, value: Union[str,int,dict]):
         '''
         dim_name: new dimension name
         value:  if value is a string, the dimension column will contain this value only.
                 if value is a dict, the dict must look like {column_header:{column_element: new_element_name}}
                 where column_header must currently exists and all column_elements must have a new_element_name.
         '''
-        if isinstance(value, str):
-            new_array = self.expand_dim(dim_name, value)
+        if isinstance(value, (str,int)):
+            new_array = self.array.add_dim(**{dim_name:value})
             new_name = f"({self.name}).add_dim({dim_name},{value})"
-            new_dims = self.dims + [dim_name]
-            return self.new_symbol(new_array, new_name, new_dims)
+            return self.new_symbol(new_array, new_name)
 
         elif isinstance(value, dict):
-            df = self.df.copy()
-            df.insert(-3, dim_name, None)
-            key = list(value.keys())[0]
-            val = value[key]
-            df[dim_name] = df[key].map(val)
-            self.set_array_from_df(df)
-            new_array = self.array
-            new_name = f"({self.name}).rename_dim({dim_name},{key}:map_dict)"
-            new_dims = self.dims + [dim_name]
-            return self.new_symbol(new_array, new_name, new_dims)
+            new_array = self.array.add_dim(**{dim_name:value})
+            new_name = f"({self.name}).add_dim({dim_name},{value})"
+            return self.new_symbol(new_array, new_name)
         else:
             raise Exception('value is neither str nor dict')
 
@@ -632,35 +604,31 @@ class Symbol:
 #                 dc[k] = v[ID]
 #         return dc
     
-#     def shrink(self, **karg):
-#         ''' 
-#         Shrinks the symbol to keep only those rows that comply the given criteria.
-#         karg is a dictionary of symbol sets as key and elements of the set as value.
-#         sets and elements must be present in the symbol.
+    def shrink(self, **kwargs):
+        ''' 
+        Shrinks the symbol to keep only those rows that comply the given criteria.
+        karg is a dictionary of symbol sets as key and elements of the set as value.
+        sets and elements must be present in the symbol.
         
-#         eg:
-#         Z.shrink(**{'tech':['pv','bio'],'h':[1,2,3,4]})
+        eg:
+        Z.shrink(**{'tech':['pv','bio'],'h':[1,2,3,4]})
         
-#         returns a new symbol
-#         '''
-#         for key, value in karg.items():
-#             if key in self.dims:
-#                 if set(value).issubset(self.items[key]):
-#                     pass
-#                 else:
-#                     not_present = set(value) - (set(value) & set(self.items[key]))
-#                     raise Exception(f"{not_present} is/are not in {self.items[key]}")
-#             else:
-#                 raise Exception(f"'{key}' is not in {self.dims} for symbol {self.name}")
-#         query_code = " & ".join([f"{k} in {v}" for k,v in karg.items()])
-#         df = self.df.copy().query(query_code)
-
-#         new_object = self*1
-#         new_object.dims = self.get('dims')
-#         new_object.df = df
-#         new_object.info = self.info
-#         new_object.name = f"({self.get('name')}).shrink({','.join(['='.join([k,str(v)]) for k,v in karg.items()])})"
-#         return new_object
+        returns a new symbol
+        '''
+        for key, value in kwargs.items():
+            if key in self.dims:
+                if set(value).issubset(self.items[key]):
+                    pass
+                else:
+                    not_present = set(value) - (set(value) & set(self.items[key]))
+                    raise Exception(f"{not_present} is/are not in {self.items[key]}")
+            else:
+                raise Exception(f"'{key}' is not in {self.dims} for symbol {self.name}")
+        
+        new_array = self.array.shrink(**kwargs)
+        new_name = f"({self.name}).shrink({','.join(['='.join([k,str(v)]) for k,v in kwargs.items()])})"
+        return self.new_symbol(new_array, new_name)
+ 
 
 #     def shrink_by_id(self, id_list):
 #         '''
@@ -742,8 +710,11 @@ class Symbol:
 #         new_object.name = f"({self.get('name')}).transform({subset_of_sets},{func},{condition},{value})"
 #         return new_object
 
-    # def __repr__(self):
-    #     return f'''Symbol(name='{self.name}', \n       value_type='{self.value_type}', \n       dims={self.dims}'''
+    def definition_msg(self, name):
+        print(f"Attribute '{name}' must be defined first in __init__ method")
+
+    def __repr__(self):
+        return f'''Symbol(name='{self.name}', \n       value_type='{self.value_type}')'''
 
 
 
