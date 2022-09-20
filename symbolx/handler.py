@@ -27,17 +27,22 @@ class DataCollection:
         self.scenarios_metadata = None
         self.symbols_book = None
 
-    def add_collector(self, colector_name:str, parser:Callable, loader:Callable):
-        self.collector[colector_name] = {}
-        self.collector[colector_name]['parser'] = parser
-        self.collector[colector_name]['loader'] = loader
-        self.add_symbol_list(colector_name, symbol_list=[])
+    def add_collector(self, collector_name:str, parser:Callable, loader:Callable):
+        self.collector[collector_name] = {}
+        self.collector[collector_name]['parser'] = parser
+        self.collector[collector_name]['loader'] = loader
+        self.add_symbol_list(collector_name)
+        self.add_custom_attr(collector_name)
+
 
     def add_folder(self, collector_name:str, folder:str):
         self.collector[collector_name]['folder'] = folder
 
     def add_symbol_list(self, collector_name:str, symbol_list:list=[]): # optional
         self.collector[collector_name]['symbol_list'] = symbol_list
+
+    def add_custom_attr(self, collector_name:str, **kwargs):
+        self.collector[collector_name]['custom'] = kwargs
 
     def adquire(self, id_integer=True):
         self.config_files = []
@@ -47,12 +52,15 @@ class DataCollection:
         for collector in self.collector:
             folder = self.collector[collector]['folder']
             symbol_list = self.collector[collector]['symbol_list']
+            custom_attr = self.collector[collector]['custom']
             parser = self.collector[collector]['parser']
             dyn_config_path = os.path.join(folder,"*/*_config.yml")
             config_files = glob.glob(dyn_config_path)
             self.config_files += config_files
             for symbol_info_dict in parser(folder, symbol_list):
                 symbol_info_dict['collector'] = collector
+                for attr in custom_attr:
+                    symbol_info_dict[attr] = custom_attr[attr]
                 self.data.append(symbol_info_dict)
 
         assert len(self.config_files) > 0, "No config files found"

@@ -1,9 +1,10 @@
+import os
+import json
+import itertools
 import karray as ka
 import pandas as pd
 import numpy as np
-import os
 import pyarrow.feather as ft
-import json
 from typing import Union
 from .handler import SymbolsHandler, from_feather_dict
 from .settings import settings, allowed_string, value_type_name_map
@@ -205,14 +206,9 @@ class Symbol:
             new_name =  f"({self.name})+{str(other)}"
             return self.new_symbol(new_array, new_name, other)
         elif isinstance(other, Symbol):
-            if set(self.dims) == set(other.dims):
-                new_array = self.array + other.array
-                new_name = f"({self.name})+({other.name})"
-                return self.new_symbol(new_array, new_name, other)
-            else:
-                flag = True
-            if flag:
-                raise Exception(f'dims are not equal. {self.name} Dims: {self.dims}, {other.name} Dims: {other.dims}')
+            new_array = self.array + other.array
+            new_name = f"({self.name})+({other.name})"
+            return self.new_symbol(new_array, new_name, other)
         else:
             raise Exception(f'{type(other)} is not supported')
 
@@ -223,14 +219,9 @@ class Symbol:
             new_name =  f"({self.name})-{str(other)}"
             return self.new_symbol(new_array, new_name, other)
         elif isinstance(other, Symbol):
-            if set(self.dims) == set(other.dims):
-                new_array = self.array - other.array
-                new_name = f"({self.name})-({other.name})"
-                return self.new_symbol(new_array, new_name, other)
-            else:
-                flag = True
-            if flag:
-                raise Exception(f'dims are not equal. {self.name} Dims: {self.dims}, {other.name} Dims: {other.dims}')
+            new_array = self.array - other.array
+            new_name = f"({self.name})-({other.name})"
+            return self.new_symbol(new_array, new_name, other)
         else:
             raise Exception(f'{type(other)} is not supported')
 
@@ -307,8 +298,6 @@ class Symbol:
             new_name = f"{str(other)}/({self.name})"
             return self.new_symbol(new_array, new_name, other)
 
-
-
     def rename(self, new_name: str):
         return self.new_symbol(self.array, new_name)
 
@@ -326,75 +315,6 @@ class Symbol:
         new_array = ka.from_pandas(df, dims=self.array.dims, order=self.array.order)
         new_name = f"({self.name}).from_pandas(df)"
         return self.new_symbol(new_array, new_name)
-
-
-
-# # Until here
-#     def refdiff(self, reference_id=0):
-#         if not self.get('dims'):
-#             data = self.df.drop("symbol", axis=1)
-#             data['value'] = data['value'] - data[data["id"] == reference_id]['value'].values
-#         else:
-#             dataframes = []
-#             for ix, df in self.df.drop("symbol", axis=1).groupby(self.get('dims')):
-#                 df['value'] = df['value'] - df[df["id"] == reference_id]['value'].values
-#                 dataframes.append(df)
-#             data = pd.concat(dataframes)
-#         name = self.get('name')+'_diff_on_'+ reference_id
-#         dt = data[['id'] + self.get("dims") + ['value']].reset_index(drop=True)
-#         return self.new_symbol(dt, name, self.get('dims'))
-
-#     def create_mix(self, criteria):
-#         ''' '''
-#         combination = self.create_combination(criteria)
-#         order = criteria.keys()
-#         return self._find_ids_by_tuple(order,combination)
-
-#     def create_combination(self, criteria: dict):
-#         return list(itertools.product(*criteria.values()))
-
-
-#     def _find_ids_by_tuple(self,key_order,combination):
-#         groups = {}
-#         for i, pair in enumerate(combination):
-#             config = {}
-#             for k, v in zip(key_order, pair):
-#                 config[k] = ('==',v)
-#             groups[i] = list(self.find_ids(**config))
-#         return groups
-
-#     def _ref_diff_group(self,refs,groups, verbose=False):
-#         symbols = []
-#         for key in groups:
-#             if len(refs[key]) == 0:
-#                 if verbose:
-#                     logger.info(f"{refs} for key = {key} no reference id found")
-#                     logger.info(groups)
-#                 continue
-#             else:
-#                 refdiff_symbol = self.shrink_by_id(groups[key]).refdiff(refs[key][0])
-#                 symbols.append(refdiff_symbol)
-#         return sum(symbols)
-
-#     def refdiff_by_sections(self, criteria_dict, criteria_ref_dict, verbose=False):
-#         ''' '''
-#         groups = self.create_mix(criteria_dict)
-#         refs = self.create_mix({**criteria_dict,**criteria_ref_dict})
-#         return self._ref_diff_group(refs,groups,verbose)
-
-#     def refdiff_by_sections_tuple(self, key_ref: str, key_order: list, combination: list, verbose: bool=False):
-#         ''' '''
-#         combination_no_ref = []
-#         index = key_order.index(key_ref)
-#         for cluster in combination:
-#             cluster_list = list(cluster)
-#             cluster_list.pop(index)
-#             no_ref_cluster = tuple(cluster_list)
-#             combination_no_ref.append(no_ref_cluster)
-#         order_no_ref = [key for key in key_order if key != key_ref]
-#         groups = self._find_ids_by_tuple(order_no_ref,combination_no_ref)
-#         refs = self._find_ids_by_tuple(key_order,combination)
-#         return self._ref_diff_group(refs,groups,verbose)
 
     @property
     def items(self):
@@ -434,30 +354,35 @@ class Symbol:
         else:
             raise Exception('value is neither str nor dict')
 
+    def elems2date(self, dim:str=None, reference_date:str='01-01-2030', freq:str='H'):
+        new_array = self.array.elems2datetime(dim=dim, reference_date=reference_date, freq=freq)
+        new_name = f"({self.name}).elems2date({dim},{reference_date},{freq})"
+        return self.new_symbol(new_array, new_name)
+
 #     def round(self, decimals:int):
 #         df = self.df.set_index(['id'] + self.get("dims")).drop("symbol", axis=1)
 #         df['value'] = df['value'].round(decimals)
 #         return self.new_symbol(self, df, f"{self.name}.round({str(decimals)})", self.get("dims"))
 
-#     def elems2str(self, by='h', string='t', digits=4):
-#         df = self.df.copy()
-#         df[by] = df[by].apply(lambda x: string+str(x).zfill(digits))
-#         new_object = self*1
-#         new_object.dims = self.get('dims')
-#         new_object.df = df
-#         new_object.info = self.info
-#         new_object.name = f"({self.get('name')}).elems2str({by},{string},{str(digits)})"
-#         return new_object
+    # def elems2str(self, by='h', string='t', digits=4):
+    #     df = self.df.copy()
+    #     df[by] = df[by].apply(lambda x: string+str(x).zfill(digits))
+    #     new_object = self*1
+    #     new_object.dims = self.get('dims')
+    #     new_object.df = df
+    #     new_object.info = self.info
+    #     new_object.name = f"({self.get('name')}).elems2str({by},{string},{str(digits)})"
+    #     return new_object
 
-#     def elems2int(self, by='h'):
-#         df = self.df.copy()
-#         df.loc[:, by] = df[by].str.extract(r"(\d+)", expand=False).astype("int16")
-#         new_object = self*1
-#         new_object.dims = self.get('dims')
-#         new_object.df = df
-#         new_object.info = self.info
-#         new_object.name = f"({self.get('name')}).elems2int({by})"
-#         return new_object
+    # def elems2int(self, by='h'):
+    #     df = self.df.copy()
+    #     df.loc[:, by] = df[by].str.extract(r"(\d+)", expand=False).astype("int16")
+    #     new_object = self*1
+    #     new_object.dims = self.get('dims')
+    #     new_object.df = df
+    #     new_object.info = self.info
+    #     new_object.name = f"({self.get('name')}).elems2int({by})"
+    #     return new_object
 
 #     def replacezero(self, by=1):
 #         df = self.df.copy()
@@ -523,86 +448,89 @@ class Symbol:
 #         new_object.name = f"({self.get('name')}).fillelems()"
 #         return new_object
     
-#     def find_ids(self, **karg):
-#         '''
-#         find ids whose headings comply the criteria to the value indicated
-#         dictionary heading as key and value as tuple of (operator, value)
-#         Example: Z.find_ids(**{'time_series_scen':('==','NaN'),'co2price(n,tech)':('<',80)})
-#         '''
-#         dc = self.get('modifiers')
-#         collector = []
-#         for k,v in dc.items():
-#             if k in karg.keys():
-#                 flag = False
-#                 nan_str = False
-#                 id_list = []
-#                 for k2, v2 in v.items():
-#                     if isinstance(v2,str):
-#                         if isinstance(karg[k][1],str):
-#                             if eval(f"'{v2}' {karg[k][0]} '{karg[k][1]}'"):
-#                                 id_list.append(k2)
-#                                 if not flag:
-#                                     flag = True
-#                             if karg[k][1] != 'NaN' and v2 == 'NaN':
-#                                 nan_str = True
-#                         else:
-#                             continue
-#                     elif np.isnan(v2):
-#                         if np.isnan(karg[k][1]):
-#                             if karg[k][0] == '==':
-#                                 id_list.append(k2)
-#                                 if not flag:
-#                                     flag = True
-#                         else:
-#                             if karg[k][0] == '!=':
-#                                 id_list.append(k2)
-#                                 if not flag:
-#                                     flag = True
-#                             elif karg[k][0] != '==':
-#                                 logger.info(f"{k} in {k2} has NaN value for condition '{karg[k][0]} {str(karg[k][1])}'. Not included")
+    def find_ids(self, **kwargs):
+        '''
+        find ids whose headings comply the criteria to the value indicated
+        dictionary heading as key and value as tuple of (operator, value)
+        Example: Z.find_ids(**{'time_series_scen':('==','NaN'),'co2price(n,tech)':('<',80)})
+        '''
+        dc = self.metadata
+        collector = []
+        for k,v in dc.items():
+            if k in kwargs.keys():
+                flag = False
+                nan_str = False
+                id_list = []
+                for k2, v2 in v.items():
+                    if isinstance(v2,str):
+                        if isinstance(kwargs[k][1],str):
+                            if eval(f"'{v2}' {kwargs[k][0]} '{kwargs[k][1]}'"):
+                                id_list.append(k2)
+                                if not flag:
+                                    flag = True
+                            if kwargs[k][1] != 'NaN' and v2 == 'NaN':
+                                nan_str = True
+                        else:
+                            continue
+                    elif np.isnan(v2):
+                        if np.isnan(kwargs[k][1]):
+                            if kwargs[k][0] == '==':
+                                id_list.append(k2)
+                                if not flag:
+                                    flag = True
+                        else:
+                            if kwargs[k][0] == '!=':
+                                id_list.append(k2)
+                                if not flag:
+                                    flag = True
+                            elif kwargs[k][0] != '==':
+                                pass
+                                # logger.info(f"{k} in {k2} has NaN value for condition '{karg[k][0]} {str(karg[k][1])}'. Not included")
                             
-#                     elif np.isnan(karg[k][1]):
-#                         if karg[k][0] == '!=':
-#                             id_list.append(k2)
-#                             if not flag:
-#                                 flag = True
-#                         else:
-#                             continue
-#                     elif eval(f"{v2} {karg[k][0]} {karg[k][1]}"):
-#                         id_list.append(k2)
-#                         if not flag:
-#                             flag = True
-#                 collector.append(set(id_list))
-#                 if not flag:
-#                     logger.info(f"Column '{k}' does not contain '{karg[k][1]}'")
-#                 if nan_str:
-#                     logger.info(f"Column '{k}' has 'NaN' as string. You can filter such string too.")
-#         not_present = []
-#         for cond in karg.keys():
-#             if cond in dc.keys():
-#                 pass
-#             else:
-#                 not_present.append(cond)
-#         if not_present:
-#             str_cond = ";".join(not_present)
-#             logger.info(f"{str_cond} not in symbol's data")
-#         return set.intersection(*collector)
+                    elif np.isnan(kwargs[k][1]):
+                        if kwargs[k][0] == '!=':
+                            id_list.append(k2)
+                            if not flag:
+                                flag = True
+                        else:
+                            continue
+                    elif eval(f"{v2} {kwargs[k][0]} {kwargs[k][1]}"):
+                        id_list.append(k2)
+                        if not flag:
+                            flag = True
+                collector.append(set(id_list))
+                if not flag:
+                    pass
+                    # logger.info(f"Column '{k}' does not contain '{karg[k][1]}'")
+                if nan_str:
+                    pass
+                    # logger.info(f"Column '{k}' has 'NaN' as string. You can filter such string too.")
+        not_present = []
+        for cond in kwargs.keys():
+            if cond in dc.keys():
+                pass
+            else:
+                not_present.append(cond)
+        if not_present:
+            str_cond = ";".join(not_present)
+            # logger.info(f"{str_cond} not in symbol's data")
+        return set.intersection(*collector)
 
-#     def id_info(self,ID):
-#         '''Gives informaion about the ID
+    def id_info(self,ID:Union[str,int]):
+        '''Gives informaion about the ID
 
-#         Args:
-#             ID (str): ID of the scenario
-#         Returns:
-#               A dictionary with the following Modifiers as keys and the corresponding value.
-#         Example:
-#            >>> Z.id_info('S0001')
-#         '''
-#         dc = dict()
-#         for k, v in self.get('modifiers').items():
-#             if ID in v.keys():
-#                 dc[k] = v[ID]
-#         return dc
+        Args:
+            ID (str): ID of the scenario
+        Returns:
+              A dictionary with the following Modifiers as keys and the corresponding value.
+        Example:
+           >>> Z.id_info('S0001')
+        '''
+        dc = dict()
+        for k, v in self.metadata.items():
+            if ID in v.keys():
+                dc[k] = v[ID]
+        return dc
     
     def shrink(self, **kwargs):
         ''' 
@@ -628,60 +556,85 @@ class Symbol:
         new_array = self.array.shrink(**kwargs)
         new_name = f"({self.name}).shrink({','.join(['='.join([k,str(v)]) for k,v in kwargs.items()])})"
         return self.new_symbol(new_array, new_name)
- 
 
-#     def shrink_by_id(self, id_list):
-#         '''
-#         Shrinks the symbol to keep only those rows that comply the given criteria.
-#         id_list is a list of ids to keep.
-#         '''
-#         ids = sorted(list(self.get('modifiers')['run'].keys()))
+    def shrink_by_attr(self, **kwargs):
+        ''' 
+        shrink_with_attributes generates new symbol based on other attributes of the dataframe. Attributes can be seen with Symbol.get('modifiers').
+        Shrink the symbol to keep only the row that comply the criteria in kargs.
+        kargs is a dictionary of symbol attributes as key and elements of the attribute columns as value.
+        attributes and attribute's elements must be present in the symbol.
 
-#         if set(id_list).issubset(ids):
-#             pass
-#         else:
-#             not_present = sorted(list(set(id_list) - (set(id_list) & set(ids))))
-#             # logger.info(f"WARNING: {not_present} is/are not in {ids}")
-#         query_code = f"id in {id_list}"
-#         df = self.df.copy().query(query_code)
-#         new_object = self*1
-#         new_object.dims = self.get('dims')
-#         new_object.df = df
-#         new_object.info = self.info
-#         new_object.name = f"({self.get('name')}).shrink_by_id({id_list})"
-#         return new_object
+        eg:
+        Z.shrink_by_attr(**{'run':[0,1],'country_set':['NA']})
 
-#     def shrink_by_attr(self, **kargs):
-#         ''' 
-#         shrink_with_attributes generates new symbol based on other attributes of the dataframe. Attributes can be seen with Symbol.get('modifiers').
-#         Shrink the symbol to keep only the row that comply the criteria in kargs.
-#         kargs is a dictionary of symbol attributes as key and elements of the attribute columns as value.
-#         attributes and attribute's elements must be present in the symbol.
+        returns a new symbol
+        '''
+        for key, value in kwargs.items():
+            dc = self.metadata
+            if key in dc.keys():
+                if set(value).issubset(set(dc[key].values())):
+                    pass
+                else:
+                    not_present = set(value) - (set(value) & set(dc[key].values()))
+                    # raise Exception(f"{not_present} is/are not in {list(set(dc[key].values()))}")
+            else:
+                raise Exception(f"'{key}' is not in {list(dc.keys())} for symbol {self.name}")
+        
+        id_list = sorted(set([item for sublist in list(self.create_mix(kwargs).values()) for item in sublist]))
+        new_object = self.shrink(id=id_list)
+        new_object.name = f"({self.name}).shrink_by_attr({','.join(['='.join([k,str(v)]) for k,v in kwargs.items()])})"
+        return new_object
 
-#         eg:
-#         Z.shrink(**{'run':[0,1],'country_set':['NA']})
+    def refdiff(self, reference_id:Union[int,str]=0):
+        ''' '''
+        new_object = self - self.shrink(id=[reference_id]).dimreduc('id')
+        new_object.name = f"({self.name}).refdiff({reference_id})"
+        return new_object
 
-#         returns a new symbol
-#         '''
-#         for key, value in kargs.items():
-#             dc = self.get('modifiers')
-#             if key in dc.keys():
-#                 if set(value).issubset(set(dc[key].values())):
-#                     pass
-#                 else:
-#                     not_present = set(value) - (set(value) & set(dc[key].values()))
-#                     # raise Exception(f"{not_present} is/are not in {list(set(dc[key].values()))}")
-#             else:
-#                 raise Exception(f"'{key}' is not in {list(dc.keys())} for symbol {self.name}")
-#         query_code = " & ".join([f"{k} in {v}" for k,v in kargs.items()])
-#         df = self.dfm.copy().query(query_code)
-#         new_object = self*1
-#         new_object.dims = self.get('dims')
-#         new_object.df = df.loc[:,['id','symbol'] + self.get('dims') + ['value']]
-#         new_object.info = self.info
-#         new_object.name = f"({self.get('name')}).shrink_by_attr({','.join(['='.join([k,str(v)]) for k,v in kargs.items()])})"
-#         return new_object
-    
+    def create_mix(self, criteria):
+        ''' '''
+        combination = self.create_combination(criteria)
+        order = criteria.keys()
+        return self._find_ids_by_tuple(order,combination)
+
+    def create_combination(self, criteria: dict):
+        return list(itertools.product(*criteria.values()))
+
+
+    def _find_ids_by_tuple(self,key_order,combination):
+        groups = {}
+        for i, pair in enumerate(combination):
+            config = {}
+            for k, v in zip(key_order, pair):
+                config[k] = ('==',v)
+            groups[i] = list(self.find_ids(**config))
+        return groups
+
+    def _ref_diff_group(self,refs,groups, verbose=False):
+        symbols = []
+        for key in groups:
+            if len(refs[key]) == 0:
+                if verbose:
+                    print(f"{refs} for key = {key} no reference id found")
+                    print(groups)
+                continue
+            else:
+                refdiff_symbol = self.shrink(id=list(groups[key])).refdiff(refs[key][0])
+                symbols.append(refdiff_symbol)
+        return sum(symbols)
+
+    def refdiff_by_sections(self, criteria_dict, criteria_ref_dict, verbose=False):
+        ''' '''
+        groups = self.create_mix(criteria_dict)
+        refs = self.create_mix({**criteria_dict,**criteria_ref_dict})
+        return self._ref_diff_group(refs,groups,verbose)
+
+    def definition_msg(self, name):
+        print(f"Attribute '{name}' must be defined first in __init__ method")
+
+    def __repr__(self):
+        return f'''Symbol(name='{self.name}', \n       value_type='{self.value_type}')'''
+
 #     def transform(self, subset_of_sets=['n'], func='sum', condition='!=', value=0):
 #         '''
 #         transform consists of providing a list of sets to group the dataframe and apply the function. Then the result is compared with a condition and a value. If the condition is true, the resulting rows are kept, otherwise it is dropped. 
@@ -709,17 +662,6 @@ class Symbol:
 #         new_object.info = self.info
 #         new_object.name = f"({self.get('name')}).transform({subset_of_sets},{func},{condition},{value})"
 #         return new_object
-
-    def definition_msg(self, name):
-        print(f"Attribute '{name}' must be defined first in __init__ method")
-
-    def __repr__(self):
-        return f'''Symbol(name='{self.name}', \n       value_type='{self.value_type}')'''
-
-
-
-
-
 
 
 

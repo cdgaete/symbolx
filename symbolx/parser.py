@@ -53,10 +53,15 @@ def symbol_parser_feather(folder: str, symbol_names: list=[]):
         symbol_info = _info_feather(file)
         if (symbol_info['symbol_name'], symbol_info['value_type']) in symbol_dict_with_value_type if len(symbol_dict_with_value_type) != 0 else True:
             symbol_dict = {}
+            # This fields are mandatory for a parser
             symbol_dict['symbol_name'] = symbol_info['symbol_name']
             symbol_dict['value_type']  = symbol_info['value_type']
-            symbol_dict['scenario_id'] = symbol_info['scenario_id']
             symbol_dict['path']        = file
+            symbol_dict['scenario_id'] = symbol_info['scenario_id']
+            # Until here
+            # you can add more (custom) attributes. It must be added also see handler.py def add_custom_attr() and be an attribute for loader
+
+
             symbol_list.append(symbol_dict)
     return symbol_list
 
@@ -144,7 +149,7 @@ def set_gams_dir(gams_dir: str = None):
     gdxFree(gdxHandle)
     return True
 
-def load_gdx(symbol_name: str, value_type: str='v', path: str='', gams_dir: str= None, **kwargs):
+def load_gdx(symbol_name: str, value_type: str='v', path: str='', gams_dir: str= None, inf_to_zero:bool=True, verbose:bool=False, **kwargs):
     '''
     Load custom GDX file.
 
@@ -166,7 +171,15 @@ def load_gdx(symbol_name: str, value_type: str='v', path: str='', gams_dir: str=
     nrdims = len(metadata['dims'])
     col_index = nrdims + value_types[value_type]
     raw_coo = symbol[:, list(range(nrdims)) + [col_index]]
-    mask = raw_coo[:,nrdims] != 0.0
+    # Warning: gams2numpy pkg convert EPS to INF as 5e+300
+    if inf_to_zero:
+        EPS = raw_coo[:, nrdims] == np.float64("5e+300")
+        raw_coo[EPS, nrdims] = 0.0
+        if verbose:
+            if sum(EPS) > 0:
+                print('GAMS EPS to 0.0 changed')
+
+    mask = raw_coo[:, nrdims] != 0.0
     coo = raw_coo[mask,:]
     return {'symbol_name': symbol_name,
             'coo':coo,
@@ -199,16 +212,25 @@ def symbol_parser_gdx(folder: str, symbol_names: list=[]):
             for value_type in options:
                 symb_tp = (name, value_type)
                 if symb_tp in symbol_dict_with_value_type:
+                                        # This fields are mandatory for a parser
                     symbol_list.append({'symbol_name':symb_tp[0],
                                         'value_type':symb_tp[1],
+                                        'path':file,
                                         'scenario_id':scen_id,
-                                        'path':file})
+                                        # Until here
+            # you can add more (custom) attributes. It must be added also see handler.py def add_custom_attr() and be an attribute for loader
+                                        'inf_to_zero':True, # included with default value. This can be changed later in handler.py def add_custom_attr()
+                                        'verbose':False,
+                                        }) 
                 else:
                     if not symbol_names:
                         symbol_list.append({'symbol_name':symb_tp[0],
                                             'value_type':symb_tp[1],
+                                            'path':file,
                                             'scenario_id':scen_id,
-                                            'path':file})
+                                            'inf_to_zero':True,
+                                            'verbose':False,
+                                            })
     return symbol_list
 
 def _symbols_list_from_gdx(filename: str = None, gams_dir: str = None):
