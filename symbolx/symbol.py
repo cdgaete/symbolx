@@ -484,8 +484,7 @@ class Symbol:
                                 if not flag:
                                     flag = True
                             elif kwargs[k][0] != '==':
-                                pass
-                                # logger.info(f"{k} in {k2} has NaN value for condition '{karg[k][0]} {str(karg[k][1])}'. Not included")
+                                print(f"{k} in {k2} has NaN value for condition '{kwargs[k][0]} {str(kwargs[k][1])}'. Not included")
                             
                     elif np.isnan(kwargs[k][1]):
                         if kwargs[k][0] == '!=':
@@ -500,11 +499,9 @@ class Symbol:
                             flag = True
                 collector.append(set(id_list))
                 if not flag:
-                    pass
-                    # logger.info(f"Column '{k}' does not contain '{karg[k][1]}'")
+                    print(f"Column '{k}' does not contain '{kwargs[k][1]}'")
                 if nan_str:
-                    pass
-                    # logger.info(f"Column '{k}' has 'NaN' as string. You can filter such string too.")
+                    print(f"Column '{k}' has 'NaN' as string. You can filter such string too.")
         not_present = []
         for cond in kwargs.keys():
             if cond in dc.keys():
@@ -513,7 +510,7 @@ class Symbol:
                 not_present.append(cond)
         if not_present:
             str_cond = ";".join(not_present)
-            # logger.info(f"{str_cond} not in symbol's data")
+            print(f"{str_cond} not in symbol's data")
         return set.intersection(*collector)
 
     def id_info(self,ID:Union[str,int]):
@@ -532,7 +529,7 @@ class Symbol:
                 dc[k] = v[ID]
         return dc
     
-    def shrink(self, **kwargs):
+    def shrink(self, neg: Union[bool, list]=False, **kwargs):
         ''' 
         Shrinks the symbol to keep only those rows that comply the given criteria.
         karg is a dictionary of symbol sets as key and elements of the set as value.
@@ -543,21 +540,46 @@ class Symbol:
         
         returns a new symbol
         '''
+        if len(kwargs) > 1:
+            if isinstance(neg,list):
+                assert len(neg) == len(kwargs)
+            else:
+                new_neg = []
+                for _ in range(len(kwargs)):
+                    new_neg.append(neg)
+                neg = new_neg
+        else:
+            neg = [neg]
+
         for key, value in kwargs.items():
             if key in self.dims:
                 if set(value).issubset(self.items[key]):
                     pass
                 else:
                     not_present = set(value) - (set(value) & set(self.items[key]))
-                    raise Exception(f"{not_present} is/are not in {self.items[key]}")
+                    present = (set(value) & set(self.items[key]))
+                    if len(present) == 0:
+                        raise Exception(f"{not_present} is/are not in {self.items[key]}")
+                    else:
+                        print(f"    Only {present} exist in {self.items[key]} and meet criteria at '{key}', while not {not_present}")
+                        kwargs[key] = sorted(present)
             else:
                 raise Exception(f"'{key}' is not in {self.dims} for symbol {self.name}")
-        
-        new_array = self.array.shrink(**kwargs)
-        new_name = f"({self.name}).shrink({','.join(['='.join([k,str(v)]) for k,v in kwargs.items()])})"
+
+        right_kwargs = {k:v for k,v in kwargs.items()}
+        i = 0
+        for key in kwargs:
+            if neg[i]:
+                all_elems = self.items[key][:]
+                for skip_elem in kwargs[key]:
+                    all_elems.remove(skip_elem)
+                right_kwargs[key] = all_elems
+
+        new_array = self.array.shrink(**right_kwargs)
+        new_name = f"({self.name}).shrink(neg={neg},{','.join(['='.join([k,str(v)]) for k,v in kwargs.items()])})"
         return self.new_symbol(new_array, new_name)
 
-    def shrink_by_attr(self, **kwargs):
+    def shrink_by_attr(self, neg=False, **kwargs):
         ''' 
         shrink_with_attributes generates new symbol based on other attributes of the dataframe. Attributes can be seen with Symbol.get('modifiers').
         Shrink the symbol to keep only the row that comply the criteria in kargs.
@@ -571,18 +593,12 @@ class Symbol:
         '''
         for key, value in kwargs.items():
             dc = self.metadata
-            if key in dc.keys():
-                if set(value).issubset(set(dc[key].values())):
-                    pass
-                else:
-                    not_present = set(value) - (set(value) & set(dc[key].values()))
-                    # raise Exception(f"{not_present} is/are not in {list(set(dc[key].values()))}")
-            else:
+            if key not in dc.keys():
                 raise Exception(f"'{key}' is not in {list(dc.keys())} for symbol {self.name}")
         
         id_list = sorted(set([item for sublist in list(self.create_mix(kwargs).values()) for item in sublist]))
-        new_object = self.shrink(id=id_list)
-        new_object.name = f"({self.name}).shrink_by_attr({','.join(['='.join([k,str(v)]) for k,v in kwargs.items()])})"
+        new_object = self.shrink(id=id_list, neg=neg)
+        new_object.name = f"(neg={neg},{self.name}).shrink_by_attr({','.join(['='.join([k,str(v)]) for k,v in kwargs.items()])})"
         return new_object
 
     def refdiff(self, reference_id:Union[int,str]=0):
