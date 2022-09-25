@@ -271,13 +271,18 @@ class SymbolsHandler:
             print("       See 'token_info' attribute of SymbolsHandler for more information")
 
 
-    def append(self, symbol):
-        assert len(set(symbol.name).difference(set(allowed_string))) == 0, f"Symbol name '{symbol.name}' contains special characters. Please, change the name of the symbol. Allowed chars are: {allowed_string}"
-        self.saved_symbols[(symbol.name, symbol.value_type)] = symbol
+    def append(self, **kwargs):
+        for name in kwargs:
+            symbol = kwargs[name]
+            assert len(set(name).difference(set(allowed_string))) == 0, f"Symbol name '{name}' contains special characters. Please, change the name of the symbol. Allowed chars are: {allowed_string}"
+            symbol.name = name
+            self.saved_symbols[(name, symbol.value_type)] = symbol
 
     def save(self, folder_path=None):
         if folder_path is None:
+            assert self.folder_path is not None, "folder_path must be provided"
             folder_path = self.folder_path
+        os.makedirs(folder_path, exist_ok=True)
         for symbol in self.saved_symbols.values():
             file_name = f"{symbol.name}.{symbol.value_type}.{symbol.symbol_handler_token}.feather"
             file_path = os.path.join(folder_path,file_name)
@@ -293,7 +298,7 @@ class SymbolsHandler:
     def __repr__(self):
         return f'''SymbolsHandler(method='{self.method}')'''
 
-
+# TODO: metadata dictionary keys are always strings. Needs to be fixed
 def from_feather_dict(path):
     arr, restored_table = ka.from_feather(path, with_table=True)
     custom_meta_key = 'symbolx'
