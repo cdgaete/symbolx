@@ -16,15 +16,10 @@ class Settings:
 
     def append(self, name_value_type_token:tuple):
         assert isinstance(name_value_type_token, tuple), "A tuple of symbol name, value_type, and symbol_handler_token must be provided."
-        assert name_value_type_token not in self.name_value_type_token, f"Tuple: {name_value_type_token} already exist. Choose a different symbol name."
-        self.name_value_type_token[name_value_type_token] = True
-
-    def exists(self, name_value_type_token:tuple):
-        assert isinstance(name_value_type_token, tuple), "A tuple of symbol name, value_type, and symbol_handler_token must be provided."
         if name_value_type_token in self.name_value_type_token:
-            return True
-        else:
-            return False
+            pass
+            # print(f"Warning:\nSymbol {name_value_type_token} already exists as a Symbol instance. Make sure that the symbol name is unique.")
+        self.name_value_type_token[name_value_type_token] = True
 
     def getnames(self):
         return self.name_value_type_token
